@@ -130,6 +130,23 @@ isolator. So:
   current setpoint block and echo it back with only the target changed.
 - [ ] **Add swing / louver controls.** Need to identify the swing command id
   (not in the core protocol notes) — check pymadoka's feature set.
+- [ ] **Reconnect after the Mac sleeps.** After the Mac wakes from sleep the
+  server fails to re-find the controller and gets stuck, e.g.:
+
+  ```
+  Connecting to XXXXXXXX-... ...
+  status read failed: Controller XXXXXXXX-... not found. It may be connected to
+  a phone (close the Madoka app) or out of Bluetooth range.
+  ```
+
+  Needs a more robust reconnect/re-scan loop after wake (and, for an always-on
+  Mac mini, prevent sleep — e.g. `caffeinate` or Energy Saver settings).
+- [ ] **Write logs to a file.** Currently logs only to the terminal. Add rotating
+  file logging so issues like the sleep/reconnect one can be reviewed after the fact.
+- [ ] **Survey what data the controller exposes, and log it over time.**
+  Investigate the full set of readable values (room temperature, outdoor
+  temperature, humidity, possibly CO2/air-quality, fan/runtime and maintenance
+  info) and record a time series for trends/dashboards.
 - [ ] Single unit only. Multi-room support (one card per controller) is a
   possible future extension.
 - [ ] The BLE protocol helpers are currently duplicated between the two scripts;
