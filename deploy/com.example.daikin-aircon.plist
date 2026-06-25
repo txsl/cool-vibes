@@ -1,0 +1,48 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  launchd LaunchAgent template for running the Daikin aircon server on a Mac mini.
+
+  This is a USER agent (runs inside the logged-in user's session, which
+  CoreBluetooth needs) - NOT a system LaunchDaemon.
+
+  Setup:
+    1. Edit the paths below: replace YOURNAME and the repo path, and set the
+       correct --address for your controller.
+    2. Copy it into place:
+         cp deploy/com.example.daikin-aircon.plist ~/Library/LaunchAgents/
+    3. Load it:
+         launchctl load -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
+    4. Stop / unload it (clean shutdown, sends SIGTERM):
+         launchctl unload -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
+
+  Logs are written to ~/Library/Logs/daikin-aircon.log
+-->
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.example.daikin-aircon</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <string>/Users/YOURNAME/Daikin-Aircon-controller/.venv/bin/python3</string>
+        <string>/Users/YOURNAME/Daikin-Aircon-controller/daikin_server.py</string>
+        <string>--address</string>
+        <string>XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX</string>
+    </array>
+
+    <key>WorkingDirectory</key>
+    <string>/Users/YOURNAME/Daikin-Aircon-controller</string>
+
+    <!-- Start at login and restart automatically if it exits -->
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+
+    <!-- Capture stdout/stderr to a log file -->
+    <key>StandardOutPath</key>
+    <string>/Users/YOURNAME/Library/Logs/daikin-aircon.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/YOURNAME/Library/Logs/daikin-aircon.log</string>
+</dict>
+</plist>

@@ -113,6 +113,52 @@ isolator. So:
   let the Mac sleep mid-connection. (A plain `kill <pid>` / SIGTERM is fine — it
   shuts down gracefully like `Ctrl+C`.)
 
+## Headless / remote Mac mini setup
+
+You can run this unattended on an always-on Mac mini, but there's one
+catch: **the first-time Bluetooth pairing must be done from a graphical login
+session**, because the pairing PIN prompt is a macOS window-server dialog. It
+cannot be completed over plain SSH. After that one-time bond, everything else can
+be managed remotely.
+
+1. **Pair once via a graphical session.** Enable Screen Sharing
+   (System Settings → General → Sharing → Screen Sharing), connect to the mini,
+   and run the pairing step from the [first-time pairing](#first-time-pairing)
+   instructions above. Accept the banner and enter the PIN. The bond persists
+   across reboots, so this is a one-time step.
+
+2. **Enable automatic login** (System Settings → Users & Groups → Automatically
+   log in as …) so the user session — which CoreBluetooth needs — is always active.
+
+3. **Prevent sleep.** A sleeping Mac currently fails to reconnect to the
+   controller (see Known issues). Disable sleep:
+
+   ```bash
+   sudo pmset -a sleep 0 displaysleep 10 disablesleep 1
+   ```
+
+   (or wrap the server in `caffeinate -s`).
+
+4. **Run it as a LaunchAgent** so it starts at login and restarts on failure. A
+   template is provided at [`deploy/com.example.daikin-aircon.plist`](deploy/com.example.daikin-aircon.plist).
+   Edit the paths and `--address` inside it, then:
+
+   ```bash
+   cp deploy/com.example.daikin-aircon.plist ~/Library/LaunchAgents/
+   launchctl load -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
+   # logs go to ~/Library/Logs/daikin-aircon.log
+   ```
+
+   Unloading it sends `SIGTERM`, which the server handles as a clean BLE
+   disconnect:
+
+   ```bash
+   launchctl unload -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
+   ```
+
+   Use a **LaunchAgent** (per-user), not a system LaunchDaemon — CoreBluetooth
+   does not work reliably outside a logged-in user session.
+
 ## Notes & limitations
 
 - While the server holds the connection, phones running the Daikin Madoka app
