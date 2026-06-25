@@ -1,0 +1,6 @@
+# Runtime dependencies for the Daikin BRC1H office aircon controller.
+# Install with:  pip3 install -r requirements.txt
+
+bleak>=0.22            # cross-platform BLE client (uses CoreBluetooth on macOS)
+fastapi>=0.110         # web framework for the control API + page
+uvicorn[standard]>=0.29  # ASGI server that runs the FastAPI app
