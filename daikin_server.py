@@ -31,6 +31,8 @@ import argparse
 import asyncio
 import logging
 import math
+import sqlite3
+import time
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 log = logging.getLogger("daikin")
@@ -51,6 +53,7 @@ CMD_GET_MODE     = 0x0030
 CMD_GET_SETPOINT = 0x0040
 CMD_GET_FAN      = 0x0050
 CMD_GET_SENSOR   = 0x0110
+CMD_GET_MAINTENANCE = 0x0130  # model + firmware versions
 # Command (write) function ids
 CMD_SET_POWER    = 0x4020
 CMD_SET_MODE     = 0x4030
@@ -69,6 +72,10 @@ SETPOINT_MAX_DEFAULT = 32.0
 # device-reported window are the real limits; this only blocks junk values).
 SETPOINT_HARD_MIN = 10.0
 SETPOINT_HARD_MAX = 40.0
+
+# Background poller cadence.
+POLL_INTERVAL = 10   # seconds between status polls (drives the cache + live UI)
+LOG_INTERVAL = 60    # max seconds between logged samples (also logs on any change)
 
 # Extra fields a SetSetpoint command must carry *in addition* to the two
 # temperatures. The BRC1H acks a setpoint command that contains only the
@@ -200,6 +207,29 @@ def build_setpoint_args(cooling: float, heating: float) -> list:
     return args
 
 
+def parse_device_info(maint: dict) -> dict:
+    """Pull model + firmware versions out of a GetMaintenanceInformation
+    (0x0130) response. Field 0x40 holds NUL-padded ASCII model strings, 0x45 a
+    3-byte controller version, 0x46 a 2-byte communication-controller version."""
+    info = {"model": None, "model_aux": None,
+            "controller_version": None, "comm_version": None}
+    raw = maint.get(0x40)
+    if raw:
+        text = "".join(chr(b) if 32 <= b < 127 else "\x00" for b in raw)
+        tokens = [t for t in text.split("\x00") if t.strip()]
+        if tokens:
+            info["model"] = tokens[0]
+        if len(tokens) > 1:
+            info["model_aux"] = tokens[1]
+    v = maint.get(0x45)
+    if v and len(v) >= 3:
+        info["controller_version"] = f"{v[0]}.{v[1]}.{v[2]}"
+    v = maint.get(0x46)
+    if v and len(v) >= 2:
+        info["comm_version"] = f"{v[0]}.{v[1]}"
+    return info
+
+
 # ----------------------------------------------------------------------------
 # BLE controller manager (one persistent, lock-serialized connection)
 # ----------------------------------------------------------------------------
@@ -211,6 +241,9 @@ class Controller:
         self.reasm = Reassembler()
         self.pending = {}
         self.connected = False
+        self.latest = {"connected": False}   # cached status served to web clients
+        self.latest_ts = 0.0
+        self.device_info = {}
 
     def _on_notify(self, _sender, data: bytearray):
         payload = self.reasm.feed(bytearray(data))
@@ -302,6 +335,27 @@ class Controller:
             "fan": FAN_NAMES.get(fan_heat if is_heat else fan_cool, "?"),
         }
 
+    async def refresh(self) -> dict:
+        """Read status, update the cache, and return it. Errors are captured
+        into the cache (not raised) so callers always get a dict."""
+        try:
+            status = await self.get_status()
+        except Exception as e:
+            log.warning("status read failed: %s", e)
+            status = {"connected": False, "error": str(e)}
+        self.latest = status
+        self.latest_ts = time.time()
+        return status
+
+    async def read_device_info(self) -> dict:
+        """Read static model/firmware info once (GetMaintenanceInformation)."""
+        try:
+            maint = await self.request(CMD_GET_MAINTENANCE)
+            self.device_info = parse_device_info(maint)
+        except Exception as e:
+            log.warning("device info read failed: %s", e)
+        return self.device_info
+
     # ---- writes ------------------------------------------------------------
     async def set_power(self, on: bool):
         await self.request(CMD_SET_POWER, [(0x20, bytes([1 if on else 0]))])
@@ -339,9 +393,91 @@ class Controller:
 
 
 # ----------------------------------------------------------------------------
+# Time-series storage (SQLite)
+# ----------------------------------------------------------------------------
+class HistoryStore:
+    """Append-only SQLite store: a `samples` time series plus a one-row
+    `device_info` table. All access is from the event-loop thread."""
+
+    def __init__(self, path: str):
+        self.path = path
+        self.db = sqlite3.connect(path)
+        self.db.execute("""CREATE TABLE IF NOT EXISTS samples (
+            ts INTEGER PRIMARY KEY,
+            power INTEGER, mode INTEGER,
+            cooling_setpoint REAL, heating_setpoint REAL,
+            room_temp INTEGER, outdoor_temp INTEGER, fan INTEGER)""")
+        self.db.execute("""CREATE TABLE IF NOT EXISTS device_info (
+            id INTEGER PRIMARY KEY CHECK (id = 1),
+            model TEXT, model_aux TEXT,
+            controller_version TEXT, comm_version TEXT, updated_ts INTEGER)""")
+        self.db.commit()
+
+    def insert_sample(self, ts: int, s: dict):
+        self.db.execute(
+            "INSERT OR REPLACE INTO samples VALUES (?,?,?,?,?,?,?,?)",
+            (ts, int(bool(s.get("power_on"))), s.get("mode_id"),
+             s.get("cooling_setpoint"), s.get("heating_setpoint"),
+             s.get("room_temp"), s.get("outdoor_temp"), s.get("fan_id")))
+        self.db.commit()
+
+    def set_device_info(self, info: dict, ts: int):
+        self.db.execute(
+            "INSERT OR REPLACE INTO device_info VALUES (1,?,?,?,?,?)",
+            (info.get("model"), info.get("model_aux"),
+             info.get("controller_version"), info.get("comm_version"), ts))
+        self.db.commit()
+
+    def get_device_info(self) -> dict:
+        row = self.db.execute(
+            "SELECT model, model_aux, controller_version, comm_version "
+            "FROM device_info WHERE id = 1").fetchone()
+        if not row:
+            return {}
+        return {"model": row[0], "model_aux": row[1],
+                "controller_version": row[2], "comm_version": row[3]}
+
+    def query_since(self, since_ts: int) -> list:
+        return self.db.execute(
+            "SELECT ts, power, mode, cooling_setpoint, heating_setpoint, "
+            "room_temp, outdoor_temp, fan FROM samples WHERE ts >= ? ORDER BY ts",
+            (since_ts,)).fetchall()
+
+    def close(self):
+        self.db.close()
+
+
+async def run_poller(controller: "Controller", store: "HistoryStore"):
+    """The single background reader. Refreshes the cache every POLL_INTERVAL and
+    appends a sample to the store every LOG_INTERVAL or whenever state changes."""
+    last_key = None
+    last_log = 0.0
+    while True:
+        try:
+            s = await controller.refresh()
+            if s.get("connected"):
+                if not controller.device_info:
+                    await controller.read_device_info()
+                    if controller.device_info:
+                        store.set_device_info(controller.device_info, int(time.time()))
+                key = (int(bool(s.get("power_on"))), s.get("mode_id"),
+                       s.get("cooling_setpoint"), s.get("heating_setpoint"),
+                       s.get("room_temp"), s.get("outdoor_temp"), s.get("fan_id"))
+                now = time.time()
+                if key != last_key or (now - last_log) >= LOG_INTERVAL:
+                    store.insert_sample(int(now), s)
+                    last_key, last_log = key, now
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:
+            log.warning("poller iteration failed: %s", e)
+        await asyncio.sleep(POLL_INTERVAL)
+
+
+# ----------------------------------------------------------------------------
 # Web app
 # ----------------------------------------------------------------------------
-def build_app(controller: "Controller"):
+def build_app(controller: "Controller", store: "HistoryStore"):
     from fastapi import FastAPI, HTTPException
     from fastapi.responses import HTMLResponse, JSONResponse
     from pydantic import BaseModel
@@ -360,32 +496,40 @@ def build_app(controller: "Controller"):
     class FanBody(BaseModel):
         speed: int
 
-    async def safe_status():
-        try:
-            return await controller.get_status()
-        except Exception as e:
-            log.warning("status read failed: %s", e)
-            return {"connected": False, "error": str(e)}
-
     @app.get("/", response_class=HTMLResponse)
     async def index():
         return HTMLResponse(PAGE)
 
+    @app.get("/history", response_class=HTMLResponse)
+    async def history_page():
+        return HTMLResponse(PAGE_HISTORY)
+
     @app.get("/api/status")
     async def status():
-        return JSONResponse(await safe_status())
+        # Served from the poller's cache - no BLE read per request.
+        return JSONResponse(controller.latest)
+
+    @app.get("/api/history")
+    async def history(hours: float = 24.0):
+        since = int(time.time() - hours * 3600)
+        t, room, sp = [], [], []
+        for ts, power, mode, cool, heat, rt, outdoor, fan in store.query_since(since):
+            t.append(ts)
+            room.append(rt)
+            sp.append(heat if mode == MODE_HEAT else cool)  # active-mode setpoint
+        return JSONResponse({"info": store.get_device_info(), "t": t, "room": room, "sp": sp})
 
     @app.post("/api/power")
     async def power(body: PowerBody):
         await controller.set_power(body.on)
-        return JSONResponse(await safe_status())
+        return JSONResponse(await controller.refresh())
 
     @app.post("/api/mode")
     async def mode(body: ModeBody):
         if body.mode not in MODE_NAMES:
             raise HTTPException(400, "invalid mode")
         await controller.set_mode(body.mode)
-        return JSONResponse(await safe_status())
+        return JSONResponse(await controller.refresh())
 
     @app.post("/api/setpoint")
     async def setpoint(body: SetpointBody):
@@ -396,23 +540,39 @@ def build_app(controller: "Controller"):
         if not (SETPOINT_HARD_MIN <= body.temp <= SETPOINT_HARD_MAX):
             raise HTTPException(400, f"temp out of range ({SETPOINT_HARD_MIN:.0f}-{SETPOINT_HARD_MAX:.0f}C)")
         await controller.set_setpoint(body.temp)
-        return JSONResponse(await safe_status())
+        return JSONResponse(await controller.refresh())
 
     @app.post("/api/fan")
     async def fan(body: FanBody):
         if not (1 <= body.speed <= 5):
             raise HTTPException(400, "invalid fan speed")
         await controller.set_fan(body.speed)
-        return JSONResponse(await safe_status())
+        return JSONResponse(await controller.refresh())
+
+    poller_task = {}
+
+    @app.on_event("startup")
+    async def _startup():
+        poller_task["t"] = asyncio.create_task(run_poller(controller, store))
+        log.info("Background poller started (poll every %ds, log every %ds).",
+                 POLL_INTERVAL, LOG_INTERVAL)
 
     @app.on_event("shutdown")
     async def _shutdown():
         log.info("Shutting down - disconnecting from controller cleanly ...")
+        task = poller_task.get("t")
+        if task:
+            task.cancel()
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
         try:
             await controller.disconnect()
             log.info("Disconnected cleanly. Safe to close this window now.")
         except Exception as e:
             log.warning("Disconnect hit an error: %s", e)
+        store.close()
 
     return app
 
@@ -454,6 +614,8 @@ PAGE = """<!doctype html>
   .status { text-align: center; font-size: 13px; color: #8a8a8e; min-height: 18px; }
   .offline { color: #ff3b30; }
   .dim { opacity: .45; pointer-events: none; }
+  .histlink { display:block; text-align:center; margin-top:14px; font-size:14px;
+              color:#0a84ff; text-decoration:none; }
 </style>
 </head>
 <body>
@@ -485,6 +647,7 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="status" id="status"></div>
+  <a class="histlink" href="/history">View history ›</a>
 </div>
 
 <script>
@@ -568,6 +731,148 @@ poll();
 </html>"""
 
 
+PAGE_HISTORY = """<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Aircon History</title>
+<style>
+  :root { color-scheme: light dark; }
+  * { box-sizing: border-box; }
+  body { font-family: -apple-system, system-ui, sans-serif; margin: 0;
+         background: #f2f3f5; color: #1c1c1e; display: flex; justify-content: center; }
+  @media (prefers-color-scheme: dark) { body { background:#000; color:#f2f2f7; } .card{background:#1c1c1e !important;} }
+  .wrap { width: 100%; max-width: 720px; padding: 20px; }
+  h1 { font-size: 20px; margin: 8px 4px 2px; }
+  .sub { color:#8a8a8e; font-size: 13px; margin: 0 4px 16px; }
+  .card { background:#fff; border-radius:18px; padding:18px; margin-bottom:16px;
+          box-shadow:0 1px 3px rgba(0,0,0,.08); }
+  .ranges { display:flex; gap:8px; margin-bottom:14px; }
+  .ranges button { font:inherit; border:none; border-radius:12px; padding:10px 16px;
+                   background:#e5e5ea; color:inherit; cursor:pointer; flex:1; }
+  .ranges button.on { background:#0a84ff; color:#fff; }
+  .legend { font-size:13px; color:#8a8a8e; margin-bottom:8px; }
+  .legend .room::before { content:"\\25cf"; color:#0a84ff; margin-right:4px; }
+  .legend .sp::before   { content:"\\25cf"; color:#ff9f0a; margin-right:4px; }
+  canvas { width:100%; height:300px; display:block; }
+  .empty { text-align:center; color:#8a8a8e; padding:40px 0; }
+  .histlink { display:block; text-align:center; margin-top:6px; font-size:14px;
+              color:#0a84ff; text-decoration:none; }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <h1>Aircon History</h1>
+  <div class="sub" id="device">&nbsp;</div>
+
+  <div class="ranges" id="ranges">
+    <button data-h="1">1h</button>
+    <button data-h="2">2h</button>
+    <button data-h="6">6h</button>
+    <button data-h="24" class="on">24h</button>
+    <button data-h="72">3d</button>
+  </div>
+
+  <div class="card">
+    <div class="legend"><span class="room">Room temp</span> &nbsp; <span class="sp">Target</span></div>
+    <canvas id="chart"></canvas>
+    <div class="empty" id="empty" style="display:none">Collecting data - check back in a minute.</div>
+  </div>
+
+  <a class="histlink" href="/">‹ Back to controls</a>
+</div>
+
+<script>
+let rangeH = 24, DATA = [];
+const el = id => document.getElementById(id);
+
+async function load(){
+  try{
+    const r = await fetch("/api/history?hours=" + rangeH);
+    const j = await r.json();
+    const info = j.info || {};
+    el("device").textContent = info.model
+      ? `${info.model} - controller ${info.controller_version||"?"}, comm ${info.comm_version||"?"}`
+      : "\\u00a0";
+    DATA = j.t.map((ts,i) => ({ t: ts*1000, room: j.room[i], sp: j.sp[i] }))
+              .filter(d => d.room != null && d.sp != null);
+  }catch(e){ DATA = []; }
+  draw();
+}
+
+function draw(){
+  const cv = el("chart");
+  if(DATA.length < 2){ cv.style.display="none"; el("empty").style.display="block"; return; }
+  cv.style.display="block"; el("empty").style.display="none";
+
+  const dpr = window.devicePixelRatio || 1;
+  const W = cv.clientWidth, H = 300;
+  cv.width = W*dpr; cv.height = H*dpr;
+  const g = cv.getContext("2d"); g.setTransform(dpr,0,0,dpr,0,0); g.clearRect(0,0,W,H);
+  const padL=36, padR=10, padT=10, padB=34;
+  const x0=padL, x1=W-padR, y0=padT, y1=H-padB;
+  const t0=DATA[0].t, t1=DATA[DATA.length-1].t;
+  let lo=Infinity, hi=-Infinity;
+  for(const d of DATA){ lo=Math.min(lo,d.room,d.sp); hi=Math.max(hi,d.room,d.sp); }
+  lo=Math.floor(lo-1); hi=Math.ceil(hi+1);
+  const grid="rgba(128,128,128,.2)";
+  const X=t=>x0+(t-t0)/(t1-t0)*(x1-x0);
+  const Y=v=>y1-(v-lo)/(hi-lo)*(y1-y0);
+
+  g.font="11px system-ui"; g.fillStyle="#8a8a8e"; g.strokeStyle=grid; g.lineWidth=1;
+  for(let v=lo; v<=hi; v += (hi-lo)<=8 ? 1 : 2){
+    const y=Y(v); g.beginPath(); g.moveTo(x0,y); g.lineTo(x1,y); g.stroke();
+    g.fillText(v+"\\u00b0", 6, y+3);
+  }
+  // nice local-time x ticks (aligned to the clock) with dates
+  const MON=["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
+  const spanMin=(t1-t0)/60000;
+  const stepMin = spanMin<=90 ? 15 : spanMin<=180 ? 30 : spanMin<=540 ? 60
+                : spanMin<=1080 ? 180 : spanMin<=2160 ? 360 : spanMin<=4800 ? 720 : 1440;
+  const start=new Date(t0); start.setHours(0,0,0,0);   // local midnight, ticks step from here
+  g.textAlign="center"; let prevDay=null;
+  for(let k=0;;k++){
+    const td=new Date(start); td.setMinutes(k*stepMin); const tk=td.getTime();
+    if(tk>t1) break;
+    if(tk<t0) continue;
+    const x=X(tk);
+    g.strokeStyle=grid; g.beginPath(); g.moveTo(x,y0); g.lineTo(x,y1); g.stroke();
+    g.fillStyle="#8a8a8e";
+    const tx=Math.min(Math.max(x,x0+16),x1-16);
+    const hh=td.getHours().toString().padStart(2,"0"), mm=td.getMinutes().toString().padStart(2,"0");
+    g.fillText(hh+":"+mm, tx, y1+14);
+    const day=td.getDate();
+    if(day!==prevDay) g.fillText(day+" "+MON[td.getMonth()], tx, y1+26);
+    prevDay=day;
+  }
+  g.textAlign="left";
+  // setpoint stepped line
+  g.strokeStyle="#ff9f0a"; g.lineWidth=2; g.beginPath();
+  DATA.forEach((d,i)=>{ const x=X(d.t), y=Y(d.sp);
+    if(i===0) g.moveTo(x,y); else { g.lineTo(x, Y(DATA[i-1].sp)); g.lineTo(x,y); } });
+  g.stroke();
+  // room temp line
+  g.strokeStyle="#0a84ff"; g.lineWidth=2; g.beginPath();
+  DATA.forEach((d,i)=>{ const x=X(d.t), y=Y(d.room); i?g.lineTo(x,y):g.moveTo(x,y); });
+  g.stroke();
+}
+
+el("ranges").addEventListener("click", e=>{
+  if(e.target.tagName!=="BUTTON") return;
+  document.querySelectorAll("#ranges button").forEach(b=>b.classList.remove("on"));
+  e.target.classList.add("on");
+  rangeH = +e.target.dataset.h;
+  load();
+});
+window.addEventListener("resize", draw);
+load();
+setInterval(load, 60000);
+</script>
+</body>
+</html>"""
+
+
 # ----------------------------------------------------------------------------
 # Offline self-test of the command encoders
 # ----------------------------------------------------------------------------
@@ -627,6 +932,18 @@ def selftest() -> int:
     check("round_setpoint 21.4 -> 21", round_setpoint(21.4), 21)
     check("round_setpoint 20.5 -> 21", round_setpoint(20.5), 21)
 
+    # device info parsing (model + firmware) from a GetMaintenance response
+    di = parse_device_info({
+        0x40: bytes.fromhex("00000000000000000000000000000000465846513332415645420000000000"
+                            "4139502f303238000000000000000000"),
+        0x45: bytes([0x03, 0x06, 0x00]),
+        0x46: bytes([0x05, 0x11]),
+    })
+    check("device model", di["model"], "FXFQ32AVEB")
+    check("device model_aux", di["model_aux"], "A9P/028")
+    check("device controller_version", di["controller_version"], "3.6.0")
+    check("device comm_version", di["comm_version"], "5.17")
+
     print("\nSelf-test:", "ALL PASSED" if ok else "FAILURES ABOVE")
     return 0 if ok else 1
 
@@ -636,6 +953,8 @@ def main():
     p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--db", default="aircon_history.db",
+                   help="SQLite history file (default aircon_history.db)")
     p.add_argument("--selftest", action="store_true", help="run offline encoder checks and exit")
     args = p.parse_args()
 
@@ -647,7 +966,8 @@ def main():
 
     import uvicorn
     controller = Controller(args.address)
-    app = build_app(controller)
+    store = HistoryStore(args.db)
+    app = build_app(controller, store)
     print(f"\nOffice Aircon server starting.")
     print(f"Open http://<this-mac-ip>:{args.port}  (find the IP with: ipconfig getifaddr en0)\n")
     uvicorn.run(app, host=args.host, port=args.port)
