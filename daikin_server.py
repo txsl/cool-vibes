@@ -30,6 +30,7 @@ NOTES
 import argparse
 import asyncio
 import logging
+import math
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 log = logging.getLogger("daikin")
@@ -59,6 +60,40 @@ CMD_SET_FAN      = 0x4050
 MODE_NAMES = {0: "Fan", 1: "Dry", 2: "Auto", 3: "Cool", 4: "Heat", 5: "Ventilation"}
 MODE_IDS = {v.lower(): k for k, v in MODE_NAMES.items()}
 FAN_NAMES = {1: "Low", 2: "Low-Med", 3: "Medium", 4: "Med-High", 5: "High"}
+MODE_HEAT = 4
+
+# Fallback setpoint window if the controller doesn't report its own limits.
+SETPOINT_MIN_DEFAULT = 16.0
+SETPOINT_MAX_DEFAULT = 32.0
+# Loose absolute sanity bounds for the write API (the controller and the
+# device-reported window are the real limits; this only blocks junk values).
+SETPOINT_HARD_MIN = 10.0
+SETPOINT_HARD_MAX = 40.0
+
+# Extra fields a SetSetpoint command must carry *in addition* to the two
+# temperatures. The BRC1H acks a setpoint command that contains only the
+# cooling/heating values and then silently ignores it; it only applies the
+# change when the full field block (range flag, setpoint mode, and every
+# min/max limit) is present. These are sent verbatim, exactly as pymadoka's
+# SetPointStatus.get_values() does: range disabled, setpoint mode 2, all
+# limits zeroed. Each entry is (object_id, byte_size, value).
+SETPOINT_EXTRA_FIELDS = [
+    (0x30, 1, 0),  # range_enabled
+    (0x31, 1, 2),  # setpoint mode
+    (0x32, 1, 0),  # minimum_differential
+    (0xA0, 1, 0),  # min_cooling_lowerlimit
+    (0xA1, 1, 0),  # min_heating_lowerlimit
+    (0xA2, 2, 0),  # cooling_lowerlimit
+    (0xA3, 2, 0),  # heating_lowerlimit
+    (0xA4, 1, 0),  # cooling_lowerlimit_symbol
+    (0xA5, 1, 0),  # heating_lowerlimit_symbol
+    (0xB0, 1, 0),  # max_cooling_upperlimit
+    (0xB1, 1, 0),  # max_heating_upperlimit
+    (0xB2, 2, 0),  # cooling_upperlimit
+    (0xB3, 2, 0),  # heating_upperlimit
+    (0xB4, 1, 0),  # cooling_upperlimit_symbol
+    (0xB5, 1, 0),  # heating_upperlimit_symbol
+]
 
 
 # ----------------------------------------------------------------------------
@@ -142,6 +177,29 @@ def temp_from_bytes(raw: bytes) -> float:
     return round(int.from_bytes(raw, "big") / 128.0 * 2) / 2
 
 
+def round_setpoint(celsius: float) -> int:
+    """Snap a target temperature to a whole degree.
+
+    This controller only honours integer-degree setpoints (raw value = degrees
+    * 128, i.e. a multiple of 128). Half-degree values like 21.5 are silently
+    rejected and leave the setpoint on its previous whole degree, so we round to
+    the nearest whole degree (half rounds up) before sending."""
+    return int(math.floor(celsius + 0.5))
+
+
+def build_setpoint_args(cooling: float, heating: float) -> list:
+    """Args for a SetSetpoint command: the cooling and heating setpoints plus
+    the full range/mode/limit field block the controller requires (see
+    SETPOINT_EXTRA_FIELDS). Returns [(object_id, value_bytes), ...]."""
+    args = [
+        (0x20, temp_to_bytes(cooling)),
+        (0x21, temp_to_bytes(heating)),
+    ]
+    for arg_id, size, value in SETPOINT_EXTRA_FIELDS:
+        args.append((arg_id, value.to_bytes(size, "big")))
+    return args
+
+
 # ----------------------------------------------------------------------------
 # BLE controller manager (one persistent, lock-serialized connection)
 # ----------------------------------------------------------------------------
@@ -208,11 +266,18 @@ class Controller:
         fan = await self.request(CMD_GET_FAN)
 
         mode_id = mode.get(0x20, b"\x02")[0]
-        is_heat = mode_id == 4
+        is_heat = mode_id == MODE_HEAT
         cool_sp = temp_from_bytes(setp[0x20]) if 0x20 in setp else None
         heat_sp = temp_from_bytes(setp[0x21]) if 0x21 in setp else None
         fan_cool = fan.get(0x20, b"\x00")[0]
         fan_heat = fan.get(0x21, b"\x00")[0]
+
+        # The controller reports the allowed setpoint window in the same
+        # GetSetpoint response: cooling lower/upper at 0xa2/0xb2, heating at
+        # 0xa3/0xb3 (2-byte temps). Fall back to the documented 16-32C range.
+        lo_id, hi_id = (0xA3, 0xB3) if is_heat else (0xA2, 0xB2)
+        min_sp = temp_from_bytes(setp[lo_id]) if lo_id in setp else SETPOINT_MIN_DEFAULT
+        max_sp = temp_from_bytes(setp[hi_id]) if hi_id in setp else SETPOINT_MAX_DEFAULT
 
         room = None
         if 0x40 in sensor:
@@ -229,6 +294,8 @@ class Controller:
             "setpoint": heat_sp if is_heat else cool_sp,
             "cooling_setpoint": cool_sp,
             "heating_setpoint": heat_sp,
+            "min_setpoint": min_sp,
+            "max_setpoint": max_sp,
             "room_temp": room,
             "outdoor_temp": outdoor,
             "fan_id": fan_heat if is_heat else fan_cool,
@@ -243,8 +310,21 @@ class Controller:
         await self.request(CMD_SET_MODE, [(0x20, bytes([mode_id]))])
 
     async def set_setpoint(self, celsius: float):
-        v = temp_to_bytes(celsius)
-        await self.request(CMD_SET_SETPOINT, [(0x20, v), (0x21, v)])
+        """Set the target temperature.
+
+        Two unit quirks drive this:
+          * It keeps the cooling and heating setpoints locked together as one
+            shared value and *rejects* a command that sets them to different
+            values, so we write both to the same target (rather than preserving
+            one and changing the other).
+          * It only accepts whole-degree setpoints, so the target is snapped to
+            the nearest degree.
+        The full field block (range/mode/limits) is still required or the
+        command is acked and ignored.
+        """
+        target = round_setpoint(celsius)
+        log.info("set_setpoint: requested %.1f -> %dC", celsius, target)
+        await self.request(CMD_SET_SETPOINT, build_setpoint_args(target, target))
 
     async def set_fan(self, speed: int):
         await self.request(CMD_SET_FAN, [(0x20, bytes([speed])), (0x21, bytes([speed]))])
@@ -309,8 +389,12 @@ def build_app(controller: "Controller"):
 
     @app.post("/api/setpoint")
     async def setpoint(body: SetpointBody):
-        if not (16.0 <= body.temp <= 32.0):
-            raise HTTPException(400, "temp out of range (16-32C)")
+        # Loose sanity bound only - the real limits are the per-mode window the
+        # controller reports (min_setpoint/max_setpoint in /api/status), which
+        # the web UI enforces. The controller itself rejects anything it won't
+        # accept, so this just rejects obviously-bogus values.
+        if not (SETPOINT_HARD_MIN <= body.temp <= SETPOINT_HARD_MAX):
+            raise HTTPException(400, f"temp out of range ({SETPOINT_HARD_MIN:.0f}-{SETPOINT_HARD_MAX:.0f}C)")
         await controller.set_setpoint(body.temp)
         return JSONResponse(await safe_status())
 
@@ -359,6 +443,7 @@ PAGE = """<!doctype html>
   button { font: inherit; border: none; border-radius: 12px; padding: 10px 14px;
            background: #e5e5ea; color: inherit; cursor: pointer; }
   button:active { transform: scale(.97); }
+  button:disabled { opacity: .3; pointer-events: none; }
   .round { width: 52px; height: 52px; border-radius: 50%; font-size: 26px; }
   .seg { display: flex; gap: 8px; flex-wrap: wrap; }
   .seg button { flex: 1; min-width: 64px; }
@@ -386,9 +471,9 @@ PAGE = """<!doctype html>
     <div class="row" style="margin-top:18px;">
       <span class="label">Target</span>
       <div class="setpoint">
-        <button class="round" onclick="bumpTemp(-0.5)">-</button>
+        <button class="round" id="tempDown" onclick="bumpTemp(-1)">-</button>
         <span class="val" id="setpoint">--</span>
-        <button class="round" onclick="bumpTemp(0.5)">+</button>
+        <button class="round" id="tempUp" onclick="bumpTemp(1)">+</button>
       </div>
     </div>
 
@@ -423,6 +508,9 @@ function render(s){
   p.textContent = s.power_on ? "On" : "Off";
   p.className = "power " + (s.power_on ? "on" : "off");
   el("setpoint").textContent = (s.setpoint ?? "--") + "°";
+  const lo = s.min_setpoint, hi = s.max_setpoint, sp = s.setpoint;
+  el("tempDown").disabled = (sp == null) || (lo != null && sp <= lo);
+  el("tempUp").disabled   = (sp == null) || (hi != null && sp >= hi);
 
   const modes = el("modes"); modes.innerHTML = "";
   for(const [id,name] of MODES){
@@ -461,7 +549,9 @@ function setMode(id){ call("/api/mode", {mode: id}); }
 function setFan(id){ call("/api/fan", {speed: id}); }
 function bumpTemp(d){
   if(!state || state.setpoint == null) return;
-  const t = Math.min(32, Math.max(16, state.setpoint + d));
+  const lo = state.min_setpoint ?? 16, hi = state.max_setpoint ?? 32;
+  const t = Math.min(hi, Math.max(lo, state.setpoint + d));
+  if(t === state.setpoint) return;   // already at the limit
   call("/api/setpoint", {temp: t});
 }
 
@@ -506,11 +596,23 @@ def selftest() -> int:
     check("SetMode Cool", bytes(build_command(CMD_SET_MODE, [(0x20, bytes([3]))])[0]),
           bytes([0x00, 0x07, 0x00, 0x40, 0x30, 0x20, 0x01, 0x03]))
 
-    # SetSetpoint(22.0): func 0x4040, 0x20 + 0x21 each 2 bytes = 22*128 = 0x0B00
+    # SetSetpoint: 22*128 = 0x0B00. The command must carry the full field block
+    # (cooling + heating + range/mode/limits), not just the two temperatures, or
+    # the controller acks and ignores it. Reassemble all chunks and inspect them.
     sp = temp_to_bytes(22.0)
     check("temp 22.0C -> bytes", sp, bytes([0x0B, 0x00]))
-    check("SetSetpoint 22.0", bytes(build_command(CMD_SET_SETPOINT, [(0x20, sp), (0x21, sp)])[0]),
-          bytes([0x00, 0x0C, 0x00, 0x40, 0x40, 0x20, 0x02, 0x0B, 0x00, 0x21, 0x02, 0x0B, 0x00]))
+    sp_args = build_setpoint_args(22.0, 22.0)
+    check("SetSetpoint field count", len(sp_args), 2 + len(SETPOINT_EXTRA_FIELDS))
+    sp_payload = bytearray()
+    for chunk in build_command(CMD_SET_SETPOINT, sp_args):
+        sp_payload += chunk[1:]  # drop the per-chunk index byte
+    check("SetSetpoint length byte", sp_payload[0], len(sp_payload))
+    check("SetSetpoint cmd id", cmd_id_of(sp_payload), CMD_SET_SETPOINT)
+    sp_objs = parse_objects(sp_payload)
+    check("SetSetpoint cooling field", sp_objs.get(0x20), bytes([0x0B, 0x00]))
+    check("SetSetpoint heating field", sp_objs.get(0x21), bytes([0x0B, 0x00]))
+    check("SetSetpoint mode field", sp_objs.get(0x31), bytes([0x02]))
+    check("SetSetpoint zeroed limit", sp_objs.get(0xB2), bytes([0x00, 0x00]))
 
     # SetFanSpeed(High=5): func 0x4050, 0x20 + 0x21 each size1 = 5
     check("SetFan High", bytes(build_command(CMD_SET_FAN, [(0x20, bytes([5])), (0x21, bytes([5]))])[0]),
@@ -518,6 +620,12 @@ def selftest() -> int:
 
     # round-trip temperature decode
     check("temp decode 22.0", temp_from_bytes(bytes([0x0B, 0x00])), 22.0)
+
+    # setpoints snap to whole degrees (the unit rejects half-degree values)
+    check("round_setpoint 21.0", round_setpoint(21.0), 21)
+    check("round_setpoint 21.5 -> 22", round_setpoint(21.5), 22)
+    check("round_setpoint 21.4 -> 21", round_setpoint(21.4), 21)
+    check("round_setpoint 20.5 -> 21", round_setpoint(20.5), 21)
 
     print("\nSelf-test:", "ALL PASSED" if ok else "FAILURES ABOVE")
     return 0 if ok else 1
