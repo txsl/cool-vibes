@@ -54,6 +54,7 @@ CMD_GET_SETPOINT = 0x0040
 CMD_GET_FAN      = 0x0050
 CMD_GET_SENSOR   = 0x0110
 CMD_GET_MAINTENANCE = 0x0130  # model + firmware versions
+CMD_GET_FILTER   = 0x0100  # clean-filter indicator (field 0x62, bit 0)
 # Command (write) function ids
 CMD_SET_POWER    = 0x4020
 CMD_SET_MODE     = 0x4030
@@ -76,6 +77,7 @@ SETPOINT_HARD_MAX = 40.0
 # Background poller cadence.
 POLL_INTERVAL = 10   # seconds between status polls (drives the cache + live UI)
 LOG_INTERVAL = 60    # max seconds between logged samples (also logs on any change)
+FILTER_INTERVAL = 300  # seconds between (slow) clean-filter reads; it changes rarely
 
 # Extra fields a SetSetpoint command must carry *in addition* to the two
 # temperatures. The BRC1H acks a setpoint command that contains only the
@@ -244,6 +246,7 @@ class Controller:
         self.latest = {"connected": False}   # cached status served to web clients
         self.latest_ts = 0.0
         self.device_info = {}
+        self.filter_dirty = None   # cached clean-filter flag (read on a slow cadence)
 
     def _on_notify(self, _sender, data: bytearray):
         payload = self.reasm.feed(bytearray(data))
@@ -333,6 +336,7 @@ class Controller:
             "outdoor_temp": outdoor,
             "fan_id": fan_heat if is_heat else fan_cool,
             "fan": FAN_NAMES.get(fan_heat if is_heat else fan_cool, "?"),
+            "filter_dirty": self.filter_dirty,   # from the slow filter read (cached)
         }
 
     async def refresh(self) -> dict:
@@ -355,6 +359,18 @@ class Controller:
         except Exception as e:
             log.warning("device info read failed: %s", e)
         return self.device_info
+
+    async def read_filter(self) -> bool:
+        """Read the clean-filter indicator (GetCleanFilter, field 0x62 bit 0).
+        Cached on the controller and patched into the served status."""
+        try:
+            f = await self.request(CMD_GET_FILTER)
+            self.filter_dirty = bool(f.get(0x62, b"\x00")[0] & 0x01)
+            if isinstance(self.latest, dict):
+                self.latest["filter_dirty"] = self.filter_dirty
+        except Exception as e:
+            log.warning("filter read failed: %s", e)
+        return self.filter_dirty
 
     # ---- writes ------------------------------------------------------------
     async def set_power(self, on: bool):
@@ -406,19 +422,28 @@ class HistoryStore:
             ts INTEGER PRIMARY KEY,
             power INTEGER, mode INTEGER,
             cooling_setpoint REAL, heating_setpoint REAL,
-            room_temp INTEGER, outdoor_temp INTEGER, fan INTEGER)""")
+            room_temp INTEGER, outdoor_temp INTEGER, fan INTEGER,
+            filter_dirty INTEGER)""")
         self.db.execute("""CREATE TABLE IF NOT EXISTS device_info (
             id INTEGER PRIMARY KEY CHECK (id = 1),
             model TEXT, model_aux TEXT,
             controller_version TEXT, comm_version TEXT, updated_ts INTEGER)""")
+        # Migrate DBs created before filter_dirty existed.
+        cols = [r[1] for r in self.db.execute("PRAGMA table_info(samples)").fetchall()]
+        if "filter_dirty" not in cols:
+            self.db.execute("ALTER TABLE samples ADD COLUMN filter_dirty INTEGER")
         self.db.commit()
 
     def insert_sample(self, ts: int, s: dict):
+        fd = s.get("filter_dirty")
         self.db.execute(
-            "INSERT OR REPLACE INTO samples VALUES (?,?,?,?,?,?,?,?)",
+            "INSERT OR REPLACE INTO samples "
+            "(ts, power, mode, cooling_setpoint, heating_setpoint, room_temp, "
+            "outdoor_temp, fan, filter_dirty) VALUES (?,?,?,?,?,?,?,?,?)",
             (ts, int(bool(s.get("power_on"))), s.get("mode_id"),
              s.get("cooling_setpoint"), s.get("heating_setpoint"),
-             s.get("room_temp"), s.get("outdoor_temp"), s.get("fan_id")))
+             s.get("room_temp"), s.get("outdoor_temp"), s.get("fan_id"),
+             None if fd is None else int(fd)))
         self.db.commit()
 
     def set_device_info(self, info: dict, ts: int):
@@ -440,8 +465,8 @@ class HistoryStore:
     def query_since(self, since_ts: int) -> list:
         return self.db.execute(
             "SELECT ts, power, mode, cooling_setpoint, heating_setpoint, "
-            "room_temp, outdoor_temp, fan FROM samples WHERE ts >= ? ORDER BY ts",
-            (since_ts,)).fetchall()
+            "room_temp, outdoor_temp, fan, filter_dirty FROM samples "
+            "WHERE ts >= ? ORDER BY ts", (since_ts,)).fetchall()
 
     def close(self):
         self.db.close()
@@ -452,18 +477,23 @@ async def run_poller(controller: "Controller", store: "HistoryStore"):
     appends a sample to the store every LOG_INTERVAL or whenever state changes."""
     last_key = None
     last_log = 0.0
+    last_filter = 0.0
     while True:
         try:
             s = await controller.refresh()
             if s.get("connected"):
+                now = time.time()
                 if not controller.device_info:
                     await controller.read_device_info()
                     if controller.device_info:
-                        store.set_device_info(controller.device_info, int(time.time()))
+                        store.set_device_info(controller.device_info, int(now))
+                if now - last_filter >= FILTER_INTERVAL:
+                    await controller.read_filter()  # patches s["filter_dirty"] in place
+                    last_filter = now
                 key = (int(bool(s.get("power_on"))), s.get("mode_id"),
                        s.get("cooling_setpoint"), s.get("heating_setpoint"),
-                       s.get("room_temp"), s.get("outdoor_temp"), s.get("fan_id"))
-                now = time.time()
+                       s.get("room_temp"), s.get("outdoor_temp"),
+                       s.get("fan_id"), controller.filter_dirty)
                 if key != last_key or (now - last_log) >= LOG_INTERVAL:
                     store.insert_sample(int(now), s)
                     last_key, last_log = key, now
@@ -512,12 +542,17 @@ def build_app(controller: "Controller", store: "HistoryStore"):
     @app.get("/api/history")
     async def history(hours: float = 24.0):
         since = int(time.time() - hours * 3600)
-        t, room, sp = [], [], []
-        for ts, power, mode, cool, heat, rt, outdoor, fan in store.query_since(since):
+        t, room, sp, power, mode_, fan, filt = [], [], [], [], [], [], []
+        for ts, pw, md, cool, heat, rt, outdoor, fn, fd in store.query_since(since):
             t.append(ts)
             room.append(rt)
-            sp.append(heat if mode == MODE_HEAT else cool)  # active-mode setpoint
-        return JSONResponse({"info": store.get_device_info(), "t": t, "room": room, "sp": sp})
+            sp.append(heat if md == MODE_HEAT else cool)  # active-mode setpoint
+            power.append(pw)
+            mode_.append(md)
+            fan.append(fn)
+            filt.append(fd)
+        return JSONResponse({"info": store.get_device_info(), "t": t, "room": room,
+                             "sp": sp, "power": power, "mode": mode_, "fan": fan, "filter": filt})
 
     @app.post("/api/power")
     async def power(body: PowerBody):
@@ -614,6 +649,8 @@ PAGE = """<!doctype html>
   .status { text-align: center; font-size: 13px; color: #8a8a8e; min-height: 18px; }
   .offline { color: #ff3b30; }
   .dim { opacity: .45; pointer-events: none; }
+  .filterline { text-align:center; font-size:13px; margin-top:8px; color:#8a8a8e; min-height:16px; }
+  .filterline.warn { color:#ff9f0a; font-weight:600; }
   .histlink { display:block; text-align:center; margin-top:14px; font-size:14px;
               color:#0a84ff; text-decoration:none; }
 </style>
@@ -647,6 +684,7 @@ PAGE = """<!doctype html>
   </div>
 
   <div class="status" id="status"></div>
+  <div class="filterline" id="filterStatus"></div>
   <a class="histlink" href="/history">View history ›</a>
 </div>
 
@@ -662,6 +700,7 @@ function render(s){
   const controls = el("controls");
   if(!s || !s.connected){
     el("status").innerHTML = '<span class="offline">Controller offline - reconnecting...</span>';
+    el("filterStatus").textContent = "";
     controls.classList.add("dim");
     return;
   }
@@ -693,6 +732,10 @@ function render(s){
   }
   const t = new Date().toLocaleTimeString();
   el("status").textContent = "Updated " + t + " · " + s.mode + " · fan " + s.fan;
+  const fs = el("filterStatus");
+  if(s.filter_dirty === true){ fs.textContent = "⚠️ Filter needs cleaning"; fs.className = "filterline warn"; }
+  else if(s.filter_dirty === false){ fs.textContent = "Filter: OK"; fs.className = "filterline"; }
+  else { fs.textContent = ""; fs.className = "filterline"; }
 }
 
 async function call(path, body){
@@ -775,7 +818,8 @@ PAGE_HISTORY = """<!doctype html>
   </div>
 
   <div class="card">
-    <div class="legend"><span class="room">Room temp</span> &nbsp; <span class="sp">Target</span></div>
+    <div class="legend"><span class="room">Room temp</span> &nbsp; <span class="sp">Target</span>
+      &nbsp; <span style="opacity:.6">shaded = off &middot; hover for details</span></div>
     <canvas id="chart"></canvas>
     <div class="empty" id="empty" style="display:none">Collecting data - check back in a minute.</div>
   </div>
@@ -784,7 +828,9 @@ PAGE_HISTORY = """<!doctype html>
 </div>
 
 <script>
-let rangeH = 24, DATA = [];
+let rangeH = 24, DATA = [], hoverX = null;
+const MODES = {0:"Fan",1:"Dry",2:"Auto",3:"Cool",4:"Heat",5:"Vent"};
+const FANS = {0:"Auto",1:"Low",2:"Low-Med",3:"Medium",4:"Med-High",5:"High"};
 const el = id => document.getElementById(id);
 
 async function load(){
@@ -795,7 +841,9 @@ async function load(){
     el("device").textContent = info.model
       ? `${info.model} - controller ${info.controller_version||"?"}, comm ${info.comm_version||"?"}`
       : "\\u00a0";
-    DATA = j.t.map((ts,i) => ({ t: ts*1000, room: j.room[i], sp: j.sp[i] }))
+    DATA = j.t.map((ts,i) => ({ t: ts*1000, room: j.room[i], sp: j.sp[i],
+                                power: j.power[i], mode: j.mode[i],
+                                fan: j.fan[i], filter: j.filter[i] }))
               .filter(d => d.room != null && d.sp != null);
   }catch(e){ DATA = []; }
   draw();
@@ -819,6 +867,12 @@ function draw(){
   const grid="rgba(128,128,128,.2)";
   const X=t=>x0+(t-t0)/(t1-t0)*(x1-x0);
   const Y=v=>y1-(v-lo)/(hi-lo)*(y1-y0);
+
+  // shade intervals where the unit was OFF
+  g.fillStyle="rgba(128,128,128,.13)";
+  for(let i=1;i<DATA.length;i++) if(!DATA[i-1].power){
+    const xa=X(DATA[i-1].t); g.fillRect(xa, y0, X(DATA[i].t)-xa, y1-y0);
+  }
 
   g.font="11px system-ui"; g.fillStyle="#8a8a8e"; g.strokeStyle=grid; g.lineWidth=1;
   for(let v=lo; v<=hi; v += (hi-lo)<=8 ? 1 : 2){
@@ -856,6 +910,28 @@ function draw(){
   g.strokeStyle="#0a84ff"; g.lineWidth=2; g.beginPath();
   DATA.forEach((d,i)=>{ const x=X(d.t), y=Y(d.room); i?g.lineTo(x,y):g.moveTo(x,y); });
   g.stroke();
+
+  // hover: guide line + tooltip with the full state at that moment
+  if(hoverX != null){
+    const t = t0 + (hoverX - x0)/(x1 - x0)*(t1 - t0);
+    let best = DATA[0]; for(const d of DATA) if(Math.abs(d.t-t) < Math.abs(best.t-t)) best = d;
+    const x = X(best.t);
+    g.strokeStyle=grid; g.lineWidth=1; g.beginPath(); g.moveTo(x,y0); g.lineTo(x,y1); g.stroke();
+    g.fillStyle="#0a84ff"; g.beginPath(); g.arc(x,Y(best.room),3,0,7); g.fill();
+    g.fillStyle="#ff9f0a"; g.beginPath(); g.arc(x,Y(best.sp),3,0,7); g.fill();
+    const d=new Date(best.t);
+    const time = d.getHours()+":"+String(d.getMinutes()).padStart(2,"0");
+    const l1 = `${time}  ${best.room}\\u00b0  target ${best.sp}\\u00b0`;
+    let l2 = `${best.power ? "On" : "Off"} \\u00b7 ${MODES[best.mode]||"?"} \\u00b7 fan ${FANS[best.fan]||"?"}`;
+    if(best.filter) l2 += " \\u00b7 filter!";
+    g.font="12px system-ui";
+    const tw = Math.max(g.measureText(l1).width, g.measureText(l2).width) + 10;
+    const bx = Math.min(Math.max(x - tw/2, x0), x1 - tw);
+    g.fillStyle="rgba(0,0,0,.78)"; g.fillRect(bx, y0, tw, 34);
+    g.fillStyle="#fff"; g.fillText(l1, bx+5, y0+14); g.fillText(l2, bx+5, y0+28);
+  }
+  cv.onmousemove = ev => { const r=cv.getBoundingClientRect(); hoverX = ev.clientX - r.left; draw(); };
+  cv.onmouseleave = () => { hoverX = null; draw(); };
 }
 
 el("ranges").addEventListener("click", e=>{
