@@ -29,6 +29,8 @@ Browser (phone/laptop)  ──HTTP──►  daikin_server.py  ──BLE──�
 | `daikin_server.py` | The web server + BLE bridge. This is the thing you run. |
 | `brc1h_spike.py`   | A read-only connectivity tester. Use it once to scan for units and complete pairing, and any time you need to debug the BLE link. |
 | `requirements.txt` | Python dependencies. |
+| `debug_setpoint.sh` | Runs the server and prints the `set_setpoint` trace on exit — for diagnosing temperature writes. Must run from a graphical login (Bluetooth is denied over SSH). |
+| `probe_range.sh` | Drives a running server's HTTP API to discover which setpoints the controller accepts, prints the min/max, and restores your value. Safe to run over SSH. |
 
 ## Requirements
 
@@ -90,11 +92,19 @@ Options:
 | `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
 | `--port` | `8000` | Port to serve on |
+| `--db` | `aircon_history.db` | SQLite file for the logged history time series |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |
 
 The web page shows room temperature and lets you change power, target
 temperature, mode (Cool/Heat/Auto/Fan/Dry) and fan speed, auto-refreshing every
-10 seconds.
+10 seconds. The target-temperature buttons step in whole degrees (this unit
+rejects half-degree setpoints) and disable at the min/max the controller
+reports for the current mode.
+
+A background poller logs status to SQLite, and a **`/history`** page (linked from
+the control page) charts room temperature and the target setpoint over the last
+6h / 24h / 3d. Status shown to web clients comes from the poller's cache, so
+multiple viewers don't each trigger a Bluetooth read.
 
 ## Stopping safely
 
@@ -169,13 +179,26 @@ be managed remotely.
 
 ## Known issues / TODO
 
-- [ ] **Temperature changes don't apply.** Fan and mode writes work, but
-  `SetSetpoint` is acknowledged and then ignored by the unit. Likely cause: the
-  command needs the full setpoint field block (range-enabled, setpoint-mode,
-  limits) rather than just the cooling/heating values. Planned fix: read the
-  current setpoint block and echo it back with only the target changed.
-- [ ] **Add swing / louver controls.** Need to identify the swing command id
-  (not in the core protocol notes) — check pymadoka's feature set.
+- [x] **Temperature changes don't apply.** Two causes, both fixed:
+  1. `SetSetpoint` only carried the cooling/heating values, so the controller
+     acked and ignored it. It now sends the full setpoint field block (range
+     flag, setpoint mode, and all min/max limits), matching pymadoka's
+     `SetPointStatus`, and reads the current pair first so it changes only the
+     active mode's setpoint (heating in Heat, cooling otherwise) and preserves
+     the other.
+  2. This unit only accepts **whole-degree** setpoints — half-degree values
+     (e.g. 21.5) were silently rejected, leaving it on the previous whole
+     degree. The web `+`/`-` buttons now step by 1 °C and the server snaps any
+     target to the nearest whole degree. Confirmed against the hardware via the
+     re-read in `debug_setpoint.sh`.
+- [ ] **Add swing / louver controls** *(needs a fresh BLE capture).* The swing
+  command is **not documented in any public source** — not pymadoka, the blafois
+  reverse-engineering notes, the Home Assistant integration, or the OpenHAB
+  binding. The blafois notes state the function list is incomplete and that the
+  Madoka app's privileged "operator" mode has un-reversed functions; airflow
+  direction is likely one of them. Implementing this requires capturing the
+  Madoka phone app's BLE traffic while toggling the louver, then decoding the
+  command id/payload — it can't be derived from existing code.
 - [ ] **Reconnect after the Mac sleeps.** After the Mac wakes from sleep the
   server fails to re-find the controller and gets stuck, e.g.:
 
@@ -189,10 +212,21 @@ be managed remotely.
   Mac mini, prevent sleep — e.g. `caffeinate` or Energy Saver settings).
 - [ ] **Write logs to a file.** Currently logs only to the terminal. Add rotating
   file logging so issues like the sleep/reconnect one can be reviewed after the fact.
-- [ ] **Survey what data the controller exposes, and log it over time.**
-  Investigate the full set of readable values (room temperature, outdoor
-  temperature, humidity, possibly CO2/air-quality, fan/runtime and maintenance
-  info) and record a time series for trends/dashboards.
+- [x] **Survey what data the controller exposes, and log it over time.** A
+  background poller (every 10s) is now the single BLE reader: it caches status
+  (served to web clients without a per-request BLE read) and logs samples to
+  SQLite (every 60s or on change). A `/history` page charts room temperature and
+  the target setpoint over 6h/24h/3d. The survey found the controller exposes
+  power, mode, setpoint(+limits), fan, indoor temp, filter status, eye-brightness
+  (writable), and model/firmware; **outdoor temp reads as n/a on this unit**, and
+  **humidity, CO2/air-quality, and energy/power are not available** in the
+  protocol. Runtime hours need an extra request (see below).
+- [ ] **Read runtime/operation hours** (`GetOperationHours 0x0112`). The indoor
+  unit keeps cumulative counters — operation hours, fan hours, powered hours —
+  which are the closest proxy to energy use (real kWh isn't exposed). Unlike the
+  other reads, this command needs an *arg'd* request (unit number + which
+  counters); a no-arg query returns empty. Encode the request per the OpenHAB
+  binding, confirm against the unit, then log the counters on a slow cadence.
 - [ ] Single unit only. Multi-room support (one card per controller) is a
   possible future extension.
 - [ ] The BLE protocol helpers are currently duplicated between the two scripts;

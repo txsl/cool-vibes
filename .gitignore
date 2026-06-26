@@ -4,10 +4,14 @@ __pycache__/
 *.egg-info/
 .pytest_cache/
 
+# Local data
+*.db
+
 # Virtual environments
 .venv/
 venv/
 env/
+.python-version
 
 # OS / editor
 .DS_Store
