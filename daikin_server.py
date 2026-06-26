@@ -417,7 +417,10 @@ class HistoryStore:
 
     def __init__(self, path: str):
         self.path = path
-        self.db = sqlite3.connect(path)
+        # In the app the connection is only touched from the event-loop thread,
+        # but check_same_thread=False lets a threaded caller (e.g. TestClient, or
+        # a future worker) use it too; access stays effectively serialized.
+        self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("""CREATE TABLE IF NOT EXISTS samples (
             ts INTEGER PRIMARY KEY,
             power INTEGER, mode INTEGER,
