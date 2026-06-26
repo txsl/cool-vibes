@@ -28,7 +28,9 @@ Browser (phone/laptop)  ──HTTP──►  daikin_server.py  ──BLE──�
 |------|---------|
 | `daikin_server.py` | The web server + BLE bridge. This is the thing you run. |
 | `brc1h_spike.py`   | A read-only connectivity tester. Use it once to scan for units and complete pairing, and any time you need to debug the BLE link. |
+| `madoka_protocol.py` | Shared BLE protocol: constants + pure encode/decode helpers, used by both scripts. |
 | `requirements.txt` | Python dependencies. |
+| `tests/` | pytest suite (protocol, storage, endpoints). Install `requirements-dev.txt`, run `pytest`. |
 | `debug_setpoint.sh` | Runs the server and prints the `set_setpoint` trace on exit — for diagnosing temperature writes. Must run from a graphical login (Bluetooth is denied over SSH). |
 | `probe_range.sh` | Drives a running server's HTTP API to discover which setpoints the controller accepts, prints the min/max, and restores your value. Safe to run over SSH. |
 
@@ -92,7 +94,8 @@ Options:
 | `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
 | `--port` | `8000` | Port to serve on |
-| `--db` | `aircon_history.db` | SQLite file for the logged history time series |
+| `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
+| `--log-file` | `<repo>/logs/daikin.log` | Rotating log file (daily, ~6 months kept) |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |
 
 The web page shows room temperature and lets you change power, target
@@ -210,8 +213,10 @@ be managed remotely.
 
   Needs a more robust reconnect/re-scan loop after wake (and, for an always-on
   Mac mini, prevent sleep — e.g. `caffeinate` or Energy Saver settings).
-- [ ] **Write logs to a file.** Currently logs only to the terminal. Add rotating
-  file logging so issues like the sleep/reconnect one can be reviewed after the fact.
+- [x] **Write logs to a file.** Logs now also go to a rotating file (daily, ~6
+  months kept) at `<repo>/logs/daikin.log` by default — anchored to the repo so
+  it works regardless of working directory; override with `--log-file`. Console
+  logging is unchanged.
 - [x] **Survey what data the controller exposes, and log it over time.** A
   background poller (every 10s) is now the single BLE reader: it caches status
   (served to web clients without a per-request BLE read) and logs samples to
@@ -221,16 +226,30 @@ be managed remotely.
   (writable), and model/firmware; **outdoor temp reads as n/a on this unit**, and
   **humidity, CO2/air-quality, and energy/power are not available** in the
   protocol. Runtime hours need an extra request (see below).
-- [ ] **Read runtime/operation hours** (`GetOperationHours 0x0112`). The indoor
-  unit keeps cumulative counters — operation hours, fan hours, powered hours —
-  which are the closest proxy to energy use (real kWh isn't exposed). Unlike the
-  other reads, this command needs an *arg'd* request (unit number + which
-  counters); a no-arg query returns empty. Encode the request per the OpenHAB
-  binding, confirm against the unit, then log the counters on a slow cadence.
-- [ ] Single unit only. Multi-room support (one card per controller) is a
-  possible future extension.
-- [ ] The BLE protocol helpers are currently duplicated between the two scripts;
-  could be factored into a shared module.
+- [x] **Runtime/operation hours — investigated, not available on this unit.**
+  `GetOperationHours 0x0112` needs an *arg'd* request listing the counter fields
+  (unit `0x02`=0, fields `0x40`–`0x48`) per the OpenHAB binding. Built and tested
+  the request/decoder, but this controller answers with every counter at **size
+  0** ("unsupported"), so there's nothing to log — same bucket as outdoor temp /
+  CO2 / energy. The request + little-endian parser would work on a unit that does
+  report them. The counters *might* be gated behind the controller's privileged/
+  "operator" mode (`0x4112`), which we chose not to poke (it's a state-changing,
+  only-partially-reversed write).
+- [ ] Single unit only. Multi-room support (one card per controller) — *de-prioritised for now.*
+- [x] Factored the shared BLE protocol (constants + pure encode/decode helpers)
+  out of the two scripts into `madoka_protocol.py`, with a pytest suite covering
+  protocol, storage, and endpoints.
+- [ ] **Grow this into an office dashboard.** Generalise the single-purpose
+  aircon app into a broader office dashboard that collects and visualises more
+  than just the AC. Each source below is a separate integration (not from the
+  BRC1H) feeding the same time-series/history model and UI:
+  - **Network data usage** — bandwidth/throughput from the office router or
+    gateway (SNMP or the router's API), charted over time.
+  - **LLM token usage** — API token consumption (e.g. Anthropic usage) per
+    day/project for cost visibility.
+
+  Implies refactoring the current temp/setpoint history into one "panel" among
+  several, with storage and a UI that aren't aircon-specific.
 
 ## Credits
 

@@ -30,42 +30,46 @@ NOTES
 import argparse
 import asyncio
 import logging
-import math
+import os
 import sqlite3
 import time
+from logging.handlers import TimedRotatingFileHandler
+
+from madoka_protocol import (
+    SERVICE_UUID, NOTIFY_CHAR, WRITE_CHAR, MAX_CHUNK_SIZE, CHUNK_DATA_LEN,
+    CMD_GET_POWER, CMD_GET_MODE, CMD_GET_SETPOINT, CMD_GET_FAN, CMD_GET_SENSOR,
+    CMD_GET_FILTER, CMD_GET_MAINTENANCE,
+    CMD_SET_POWER, CMD_SET_MODE, CMD_SET_SETPOINT, CMD_SET_FAN,
+    MODE_NAMES, MODE_IDS, FAN_NAMES, MODE_HEAT, SETPOINT_EXTRA_FIELDS,
+    build_command, build_query, split_in_chunks, Reassembler, cmd_id_of,
+    parse_objects, temp_to_bytes, temp_from_bytes, round_setpoint,
+    build_setpoint_args, parse_device_info,
+)
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 log = logging.getLogger("daikin")
 
+# Defaults anchored to this file's directory so they land in the repo no matter
+# what the working directory is (e.g. under a LaunchAgent).
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB = os.path.join(REPO_DIR, "aircon_history.db")
+DEFAULT_LOG_FILE = os.path.join(REPO_DIR, "logs", "daikin.log")
+LOG_RETENTION_DAYS = 180   # daily rotation, ~6 months kept
+
+
+def setup_file_logging(path: str) -> logging.Handler:
+    """Add a rotating file handler (one file per day, kept LOG_RETENTION_DAYS)
+    alongside the console. Creates the parent directory if needed."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    handler = TimedRotatingFileHandler(path, when="midnight",
+                                       backupCount=LOG_RETENTION_DAYS)
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)s  %(name)s  %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return handler
+
 # ----------------------------------------------------------------------------
-# BLE protocol constants (BRC1H AC-management service)
+# Server-side policy (BLE protocol + pure helpers live in madoka_protocol.py)
 # ----------------------------------------------------------------------------
-SERVICE_UUID = "2141e110-213a-11e6-b67b-9e71128cae77"
-NOTIFY_CHAR  = "2141e111-213a-11e6-b67b-9e71128cae77"  # RX (device -> us)
-WRITE_CHAR   = "2141e112-213a-11e6-b67b-9e71128cae77"  # TX (us -> device)
-
-MAX_CHUNK_SIZE = 20
-CHUNK_DATA_LEN = 19
-
-# Query (read) function ids
-CMD_GET_POWER    = 0x0020
-CMD_GET_MODE     = 0x0030
-CMD_GET_SETPOINT = 0x0040
-CMD_GET_FAN      = 0x0050
-CMD_GET_SENSOR   = 0x0110
-CMD_GET_MAINTENANCE = 0x0130  # model + firmware versions
-CMD_GET_FILTER   = 0x0100  # clean-filter indicator (field 0x62, bit 0)
-# Command (write) function ids
-CMD_SET_POWER    = 0x4020
-CMD_SET_MODE     = 0x4030
-CMD_SET_SETPOINT = 0x4040
-CMD_SET_FAN      = 0x4050
-
-MODE_NAMES = {0: "Fan", 1: "Dry", 2: "Auto", 3: "Cool", 4: "Heat", 5: "Ventilation"}
-MODE_IDS = {v.lower(): k for k, v in MODE_NAMES.items()}
-FAN_NAMES = {1: "Low", 2: "Low-Med", 3: "Medium", 4: "Med-High", 5: "High"}
-MODE_HEAT = 4
-
 # Fallback setpoint window if the controller doesn't report its own limits.
 SETPOINT_MIN_DEFAULT = 16.0
 SETPOINT_MAX_DEFAULT = 32.0
@@ -78,159 +82,6 @@ SETPOINT_HARD_MAX = 40.0
 POLL_INTERVAL = 10   # seconds between status polls (drives the cache + live UI)
 LOG_INTERVAL = 60    # max seconds between logged samples (also logs on any change)
 FILTER_INTERVAL = 300  # seconds between (slow) clean-filter reads; it changes rarely
-
-# Extra fields a SetSetpoint command must carry *in addition* to the two
-# temperatures. The BRC1H acks a setpoint command that contains only the
-# cooling/heating values and then silently ignores it; it only applies the
-# change when the full field block (range flag, setpoint mode, and every
-# min/max limit) is present. These are sent verbatim, exactly as pymadoka's
-# SetPointStatus.get_values() does: range disabled, setpoint mode 2, all
-# limits zeroed. Each entry is (object_id, byte_size, value).
-SETPOINT_EXTRA_FIELDS = [
-    (0x30, 1, 0),  # range_enabled
-    (0x31, 1, 2),  # setpoint mode
-    (0x32, 1, 0),  # minimum_differential
-    (0xA0, 1, 0),  # min_cooling_lowerlimit
-    (0xA1, 1, 0),  # min_heating_lowerlimit
-    (0xA2, 2, 0),  # cooling_lowerlimit
-    (0xA3, 2, 0),  # heating_lowerlimit
-    (0xA4, 1, 0),  # cooling_lowerlimit_symbol
-    (0xA5, 1, 0),  # heating_lowerlimit_symbol
-    (0xB0, 1, 0),  # max_cooling_upperlimit
-    (0xB1, 1, 0),  # max_heating_upperlimit
-    (0xB2, 2, 0),  # cooling_upperlimit
-    (0xB3, 2, 0),  # heating_upperlimit
-    (0xB4, 1, 0),  # cooling_upperlimit_symbol
-    (0xB5, 1, 0),  # heating_upperlimit_symbol
-]
-
-
-# ----------------------------------------------------------------------------
-# Protocol helpers (pure; covered by --selftest)
-# ----------------------------------------------------------------------------
-def build_command(cmd_id: int, args=None) -> list:
-    """Build on-wire chunk(s) for `cmd_id` with optional [(arg_id, value_bytes), ...].
-
-    Payload: [total_len][0x00][cmd_hi][cmd_lo] then either the no-arg marker
-    (0x00 0x00) or repeating [arg_id][size][value...]. `total_len` counts itself.
-    """
-    body = bytearray([0x00]) + cmd_id.to_bytes(2, "big")  # 3-byte function id
-    if args:
-        for arg_id, value in args:
-            body += bytearray([arg_id, len(value)]) + bytearray(value)
-    else:
-        body += bytearray([0x00, 0x00])
-    payload = bytearray([0x00]) + body
-    payload[0] = len(payload)
-    return split_in_chunks(payload)
-
-
-def split_in_chunks(data: bytearray) -> list:
-    chunks = []
-    idx = 0
-    while True:
-        piece = data[idx * CHUNK_DATA_LEN:(idx + 1) * CHUNK_DATA_LEN]
-        chunks.append(bytearray(idx.to_bytes(1, "big")) + piece)
-        idx += 1
-        if idx * CHUNK_DATA_LEN >= len(data):
-            break
-    return chunks
-
-
-class Reassembler:
-    def __init__(self):
-        self.chunks = []
-
-    def feed(self, chunk: bytearray):
-        if len(chunk) < 2:
-            return None
-        if chunk[0] == 0:
-            self.chunks = []
-        self.chunks.append(chunk)
-        total_len = self.chunks[0][1]
-        expected = -(-total_len // MAX_CHUNK_SIZE)
-        if len(self.chunks) == expected:
-            out = bytearray()
-            for c in self.chunks:
-                out.extend(c[1:])
-            self.chunks = []
-            return out
-        return None
-
-
-def cmd_id_of(payload: bytearray) -> int:
-    return int.from_bytes(payload[2:4], "big")
-
-
-def parse_objects(payload: bytearray) -> dict:
-    objects = {}
-    i = 4
-    while i + 1 < len(payload):
-        oid = payload[i]
-        size = payload[i + 1]
-        value = bytes(payload[i + 2:i + 2 + size])
-        if len(value) < size:
-            break
-        objects[oid] = value
-        i += 2 + size
-    return objects
-
-
-def temp_to_bytes(celsius: float) -> bytes:
-    """Encode a temperature as the device's 2-byte GFLOAT (value * 128)."""
-    return int(round(celsius * 128)).to_bytes(2, "big")
-
-
-def temp_from_bytes(raw: bytes) -> float:
-    """Decode a 2-byte GFLOAT temperature, rounded to the nearest 0.5C."""
-    return round(int.from_bytes(raw, "big") / 128.0 * 2) / 2
-
-
-def round_setpoint(celsius: float) -> int:
-    """Snap a target temperature to a whole degree.
-
-    This controller only honours integer-degree setpoints (raw value = degrees
-    * 128, i.e. a multiple of 128). Half-degree values like 21.5 are silently
-    rejected and leave the setpoint on its previous whole degree, so we round to
-    the nearest whole degree (half rounds up) before sending."""
-    return int(math.floor(celsius + 0.5))
-
-
-def build_setpoint_args(cooling: float, heating: float) -> list:
-    """Args for a SetSetpoint command: the cooling and heating setpoints plus
-    the full range/mode/limit field block the controller requires (see
-    SETPOINT_EXTRA_FIELDS). Returns [(object_id, value_bytes), ...]."""
-    args = [
-        (0x20, temp_to_bytes(cooling)),
-        (0x21, temp_to_bytes(heating)),
-    ]
-    for arg_id, size, value in SETPOINT_EXTRA_FIELDS:
-        args.append((arg_id, value.to_bytes(size, "big")))
-    return args
-
-
-def parse_device_info(maint: dict) -> dict:
-    """Pull model + firmware versions out of a GetMaintenanceInformation
-    (0x0130) response. Field 0x40 holds NUL-padded ASCII model strings, 0x45 a
-    3-byte controller version, 0x46 a 2-byte communication-controller version."""
-    info = {"model": None, "model_aux": None,
-            "controller_version": None, "comm_version": None}
-    raw = maint.get(0x40)
-    if raw:
-        text = "".join(chr(b) if 32 <= b < 127 else "\x00" for b in raw)
-        tokens = [t for t in text.split("\x00") if t.strip()]
-        if tokens:
-            info["model"] = tokens[0]
-        if len(tokens) > 1:
-            info["model_aux"] = tokens[1]
-    v = maint.get(0x45)
-    if v and len(v) >= 3:
-        info["controller_version"] = f"{v[0]}.{v[1]}.{v[2]}"
-    v = maint.get(0x46)
-    if v and len(v) >= 2:
-        info["comm_version"] = f"{v[0]}.{v[1]}"
-    return info
-
 
 # ----------------------------------------------------------------------------
 # BLE controller manager (one persistent, lock-serialized connection)
@@ -417,7 +268,10 @@ class HistoryStore:
 
     def __init__(self, path: str):
         self.path = path
-        self.db = sqlite3.connect(path)
+        # In the app the connection is only touched from the event-loop thread,
+        # but check_same_thread=False lets a threaded caller (e.g. TestClient, or
+        # a future worker) use it too; access stays effectively serialized.
+        self.db = sqlite3.connect(path, check_same_thread=False)
         self.db.execute("""CREATE TABLE IF NOT EXISTS samples (
             ts INTEGER PRIMARY KEY,
             power INTEGER, mode INTEGER,
@@ -1029,8 +883,10 @@ def main():
     p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
-    p.add_argument("--db", default="aircon_history.db",
-                   help="SQLite history file (default aircon_history.db)")
+    p.add_argument("--db", default=DEFAULT_DB,
+                   help="SQLite history file (default: <repo>/aircon_history.db)")
+    p.add_argument("--log-file", default=DEFAULT_LOG_FILE,
+                   help="rotating log file (default: <repo>/logs/daikin.log)")
     p.add_argument("--selftest", action="store_true", help="run offline encoder checks and exit")
     args = p.parse_args()
 
@@ -1039,6 +895,9 @@ def main():
 
     if not args.address:
         p.error("--address is required (get it from: python brc1h_spike.py --scan)")
+
+    setup_file_logging(args.log_file)
+    log.info("Logging to %s (daily rotation, %d days kept)", args.log_file, LOG_RETENTION_DAYS)
 
     import uvicorn
     controller = Controller(args.address)
