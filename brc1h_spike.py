@@ -46,102 +46,22 @@ import argparse
 import asyncio
 import sys
 
-# ----------------------------------------------------------------------------
-# Protocol constants (BRC1H AC-management service)
-# ----------------------------------------------------------------------------
-SERVICE_UUID = "2141e110-213a-11e6-b67b-9e71128cae77"
-NOTIFY_CHAR  = "2141e111-213a-11e6-b67b-9e71128cae77"  # RX (device -> us)
-WRITE_CHAR   = "2141e112-213a-11e6-b67b-9e71128cae77"  # TX (us -> device)
+from madoka_protocol import (
+    SERVICE_UUID, NOTIFY_CHAR, WRITE_CHAR, MODE_NAMES,
+    build_query, split_in_chunks, Reassembler, parse_objects, cmd_id_of,
+)
 
-MAX_CHUNK_SIZE = 20          # device limit, bytes per BLE packet
-CHUNK_DATA_LEN = 19          # 20 - 1 byte chunk index
-
-# Read-only function IDs we will query (name -> 16-bit command id)
+# ----------------------------------------------------------------------------
+# Read-only function IDs we will query (name -> 16-bit command id).
+# The protocol constants and pure encode/decode helpers come from
+# madoka_protocol (shared with daikin_server.py).
+# ----------------------------------------------------------------------------
 QUERIES = {
     "Power (on/off)":   0x0020,  # GetSettingStatus
     "Operation mode":   0x0030,  # GetOperationMode
     "Setpoint":         0x0040,  # GetSetpoint
     "Indoor temp":      0x0110,  # GetSensorInformation
 }
-
-MODE_NAMES = {0: "Fan", 1: "Dry", 2: "Auto", 3: "Cool", 4: "Heat", 5: "Ventilation"}
-
-
-# ----------------------------------------------------------------------------
-# Pure protocol helpers (no Bluetooth required - covered by --selftest)
-# ----------------------------------------------------------------------------
-def build_query(cmd_id: int) -> list:
-    """Build the on-wire chunk(s) for a no-argument query of `cmd_id`.
-
-    Payload layout (before chunking):
-        [total_len][0x00][cmd_hi][cmd_lo][arg_id=0x00][arg_size=0x00]
-    `total_len` counts itself plus everything after it. Then the payload is split
-    into <=19-byte pieces, each prefixed with a chunk index byte.
-    """
-    payload = bytearray([0x00, 0x00]) + cmd_id.to_bytes(2, "big") + bytearray([0x00, 0x00])
-    payload[0] = len(payload)
-    return split_in_chunks(payload)
-
-
-def split_in_chunks(data: bytearray) -> list:
-    """Split `data` into chunks of <=19 data bytes, each prefixed with its index."""
-    chunks = []
-    idx = 0
-    while True:
-        piece = data[idx * CHUNK_DATA_LEN:(idx + 1) * CHUNK_DATA_LEN]
-        chunks.append(bytearray(idx.to_bytes(1, "big")) + piece)
-        idx += 1
-        if idx * CHUNK_DATA_LEN >= len(data):
-            break
-    return chunks
-
-
-class Reassembler:
-    """Reassembles inbound chunks into a full payload, mirroring pymadoka's Transport."""
-
-    def __init__(self):
-        self.chunks = []
-
-    def feed(self, chunk: bytearray):
-        """Add a chunk; return the reassembled payload bytes if complete, else None."""
-        if len(chunk) < 2:
-            return None
-        chunk_id = chunk[0]
-        if chunk_id == 0:
-            self.chunks = []  # start of a new message
-        self.chunks.append(chunk)
-        total_len = self.chunks[0][1]
-        expected = -(-total_len // MAX_CHUNK_SIZE)  # ceil
-        if len(self.chunks) == expected:
-            out = bytearray()
-            for c in self.chunks:
-                out.extend(c[1:])  # drop the chunk index byte
-            self.chunks = []
-            return out
-        return None
-
-
-def parse_objects(payload: bytearray) -> dict:
-    """Parse a reassembled response payload into {object_id: value_bytes}.
-
-    Layout: [total_len][0x00][cmd_hi][cmd_lo] then repeating [id][size][value...].
-    """
-    objects = {}
-    i = 4  # skip length, 0x00, and the 2-byte command id
-    while i + 1 < len(payload):
-        oid = payload[i]
-        size = payload[i + 1]
-        value = bytes(payload[i + 2:i + 2 + size])
-        if len(value) < size:
-            break
-        objects[oid] = value
-        i += 2 + size
-    return objects
-
-
-def cmd_id_of(payload: bytearray) -> int:
-    """Extract the 16-bit command id from a reassembled response payload."""
-    return int.from_bytes(payload[2:4], "big")
 
 
 def interpret(cmd_id: int, objects: dict) -> str:
