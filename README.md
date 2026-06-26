@@ -226,12 +226,15 @@ be managed remotely.
   (writable), and model/firmware; **outdoor temp reads as n/a on this unit**, and
   **humidity, CO2/air-quality, and energy/power are not available** in the
   protocol. Runtime hours need an extra request (see below).
-- [ ] **Read runtime/operation hours** (`GetOperationHours 0x0112`). The indoor
-  unit keeps cumulative counters — operation hours, fan hours, powered hours —
-  which are the closest proxy to energy use (real kWh isn't exposed). Unlike the
-  other reads, this command needs an *arg'd* request (unit number + which
-  counters); a no-arg query returns empty. Encode the request per the OpenHAB
-  binding, confirm against the unit, then log the counters on a slow cadence.
+- [x] **Runtime/operation hours — investigated, not available on this unit.**
+  `GetOperationHours 0x0112` needs an *arg'd* request listing the counter fields
+  (unit `0x02`=0, fields `0x40`–`0x48`) per the OpenHAB binding. Built and tested
+  the request/decoder, but this controller answers with every counter at **size
+  0** ("unsupported"), so there's nothing to log — same bucket as outdoor temp /
+  CO2 / energy. The request + little-endian parser would work on a unit that does
+  report them. The counters *might* be gated behind the controller's privileged/
+  "operator" mode (`0x4112`), which we chose not to poke (it's a state-changing,
+  only-partially-reversed write).
 - [ ] Single unit only. Multi-room support (one card per controller) — *de-prioritised for now.*
 - [x] Factored the shared BLE protocol (constants + pure encode/decode helpers)
   out of the two scripts into `madoka_protocol.py`, with a pytest suite covering
