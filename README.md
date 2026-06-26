@@ -94,7 +94,8 @@ Options:
 | `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
 | `--port` | `8000` | Port to serve on |
-| `--db` | `aircon_history.db` | SQLite file for the logged history time series |
+| `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
+| `--log-file` | `<repo>/logs/daikin.log` | Rotating log file (daily, ~6 months kept) |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |
 
 The web page shows room temperature and lets you change power, target
@@ -212,8 +213,10 @@ be managed remotely.
 
   Needs a more robust reconnect/re-scan loop after wake (and, for an always-on
   Mac mini, prevent sleep — e.g. `caffeinate` or Energy Saver settings).
-- [ ] **Write logs to a file.** Currently logs only to the terminal. Add rotating
-  file logging so issues like the sleep/reconnect one can be reviewed after the fact.
+- [x] **Write logs to a file.** Logs now also go to a rotating file (daily, ~6
+  months kept) at `<repo>/logs/daikin.log` by default — anchored to the repo so
+  it works regardless of working directory; override with `--log-file`. Console
+  logging is unchanged.
 - [x] **Survey what data the controller exposes, and log it over time.** A
   background poller (every 10s) is now the single BLE reader: it caches status
   (served to web clients without a per-request BLE read) and logs samples to

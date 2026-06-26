@@ -30,8 +30,10 @@ NOTES
 import argparse
 import asyncio
 import logging
+import os
 import sqlite3
 import time
+from logging.handlers import TimedRotatingFileHandler
 
 from madoka_protocol import (
     SERVICE_UUID, NOTIFY_CHAR, WRITE_CHAR, MAX_CHUNK_SIZE, CHUNK_DATA_LEN,
@@ -46,6 +48,24 @@ from madoka_protocol import (
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s  %(message)s")
 log = logging.getLogger("daikin")
+
+# Defaults anchored to this file's directory so they land in the repo no matter
+# what the working directory is (e.g. under a LaunchAgent).
+REPO_DIR = os.path.dirname(os.path.abspath(__file__))
+DEFAULT_DB = os.path.join(REPO_DIR, "aircon_history.db")
+DEFAULT_LOG_FILE = os.path.join(REPO_DIR, "logs", "daikin.log")
+LOG_RETENTION_DAYS = 180   # daily rotation, ~6 months kept
+
+
+def setup_file_logging(path: str) -> logging.Handler:
+    """Add a rotating file handler (one file per day, kept LOG_RETENTION_DAYS)
+    alongside the console. Creates the parent directory if needed."""
+    os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
+    handler = TimedRotatingFileHandler(path, when="midnight",
+                                       backupCount=LOG_RETENTION_DAYS)
+    handler.setFormatter(logging.Formatter("%(asctime)s  %(levelname)s  %(name)s  %(message)s"))
+    logging.getLogger().addHandler(handler)
+    return handler
 
 # ----------------------------------------------------------------------------
 # Server-side policy (BLE protocol + pure helpers live in madoka_protocol.py)
@@ -863,8 +883,10 @@ def main():
     p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
     p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
-    p.add_argument("--db", default="aircon_history.db",
-                   help="SQLite history file (default aircon_history.db)")
+    p.add_argument("--db", default=DEFAULT_DB,
+                   help="SQLite history file (default: <repo>/aircon_history.db)")
+    p.add_argument("--log-file", default=DEFAULT_LOG_FILE,
+                   help="rotating log file (default: <repo>/logs/daikin.log)")
     p.add_argument("--selftest", action="store_true", help="run offline encoder checks and exit")
     args = p.parse_args()
 
@@ -873,6 +895,9 @@ def main():
 
     if not args.address:
         p.error("--address is required (get it from: python brc1h_spike.py --scan)")
+
+    setup_file_logging(args.log_file)
+    log.info("Logging to %s (daily rotation, %d days kept)", args.log_file, LOG_RETENTION_DAYS)
 
     import uvicorn
     controller = Controller(args.address)
