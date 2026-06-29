@@ -77,14 +77,20 @@ temperature.
 ## Running the server
 
 ```bash
-python3 daikin_server.py --address <ADDRESS>
+sudo python3 daikin_server.py --address <ADDRESS>
 ```
+
+The default port is **80**, which needs privileges (hence `sudo`). On macOS
+that's a trade-off: ports below 1024 need root, but CoreBluetooth's Bluetooth
+grant is tied to your login session, so running under `sudo` can lose it. If
+Bluetooth breaks, keep running as your user on `--port 8000` and redirect with
+pf — the server prints the exact `pfctl` command if the bind fails.
 
 Then find the Mac's LAN IP and open the page from any office device:
 
 ```bash
 ipconfig getifaddr en0        # prints the Mac's IP, e.g. 192.168.0.10
-# open http://192.168.0.10:8000 in a browser
+# open http://192.168.0.10/ in a browser
 ```
 
 Options:
@@ -93,7 +99,7 @@ Options:
 |------|---------|---------|
 | `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
-| `--port` | `8000` | Port to serve on |
+| `--port` | `80` | Port to serve on (use `8000` to avoid needing root) |
 | `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
 | `--log-file` | `<repo>/logs/daikin.log` | Rotating log file (daily, ~6 months kept) |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |

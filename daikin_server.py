@@ -12,11 +12,17 @@ single BLE link, which sidesteps the "only one phone can pair" limitation.
 
 SETUP
     pip3 install bleak fastapi "uvicorn[standard]"
-    python3 daikin_server.py --address <BRC1H address>
+    sudo python3 daikin_server.py --address <BRC1H address>
         (use the address brc1h_spike.py --scan showed for the office unit)
+        (port 80 is the default and needs privileges; see the port note below)
 
-    Then open  http://<this-mac's-LAN-IP>:8000  from any office machine/phone.
+    Then open  http://<this-mac's-LAN-IP>/  from any office machine/phone.
     Find this Mac's IP with:  ipconfig getifaddr en0
+
+    Port 80 (<1024) needs root on macOS, but CoreBluetooth's Bluetooth grant is
+    tied to your login session, so running under sudo can lose it. If Bluetooth
+    breaks under sudo, keep running as your user with --port 8000 and redirect
+    80 -> 8000 with pf (the server prints the exact command if the bind fails).
 
 NOTES
     * The controller must already be BONDED to this Mac (run brc1h_spike.py once
@@ -882,7 +888,7 @@ def main():
     p = argparse.ArgumentParser(description="Shared web control for a Daikin BRC1H.")
     p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
-    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--port", type=int, default=80, help="port (default 80)")
     p.add_argument("--db", default=DEFAULT_DB,
                    help="SQLite history file (default: <repo>/aircon_history.db)")
     p.add_argument("--log-file", default=DEFAULT_LOG_FILE,
@@ -904,8 +910,26 @@ def main():
     store = HistoryStore(args.db)
     app = build_app(controller, store)
     print(f"\nOffice Aircon server starting.")
-    print(f"Open http://<this-mac-ip>:{args.port}  (find the IP with: ipconfig getifaddr en0)\n")
-    uvicorn.run(app, host=args.host, port=args.port)
+    suffix = "" if args.port == 80 else f":{args.port}"
+    print(f"Open http://<this-mac-ip>{suffix}  (find the IP with: ipconfig getifaddr en0)\n")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port)
+    except PermissionError:
+        # Ports below 1024 need root on macOS, but CoreBluetooth's Bluetooth
+        # grant is tied to the logged-in user session - running the whole
+        # server under sudo can lose that grant. Prefer a pf redirect (80->8000)
+        # while still running as the normal user, or pass --port 8000.
+        log.error("Permission denied binding port %d.", args.port)
+        print(
+            f"\nCould not bind port {args.port} (ports <1024 need privileges on macOS).\n"
+            "Options:\n"
+            "  - Keep running as your normal user and redirect 80 -> 8000 with pf:\n"
+            "      echo 'rdr pass inet proto tcp from any to any port 80 -> 127.0.0.1 port 8000' | sudo pfctl -ef -\n"
+            "      then start with: --port 8000\n"
+            "  - Or run this server with sudo (note: CoreBluetooth may lose its\n"
+            "    Bluetooth permission outside your login session).\n"
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":
