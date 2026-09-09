@@ -76,9 +76,23 @@ temperature.
 
 ## Running the server
 
+Put the controller's address in a `.env` file once — it is gitignored, so this
+deployment's settings stay out of the repo:
+
 ```bash
-sudo python3 daikin_server.py --address <ADDRESS>
+cp .env.example .env
+$EDITOR .env          # set DAIKIN_ADDRESS=<the address from --scan>
 ```
+
+```bash
+sudo python3 daikin_server.py
+```
+
+`--address` still works and overrides `.env`; a `DAIKIN_ADDRESS` already set in
+the environment wins over the file too. Reading `.env` in-process is what makes
+the LaunchAgent below work: launchd starts the server with a minimal
+environment and never sources your shell profile, so an exported variable would
+not reach it.
 
 The default port is **80**, which needs privileges (hence `sudo`). On macOS
 that's a trade-off: ports below 1024 need root, but CoreBluetooth's Bluetooth
@@ -97,7 +111,7 @@ Options:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
+| `--address` | `$DAIKIN_ADDRESS`, else `.env` | BLE address / CoreBluetooth UUID of the controller (required, from any of the three) |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
 | `--port` | `80` | Port to serve on (use `8000` to avoid needing root) |
 | `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
@@ -160,7 +174,8 @@ be managed remotely.
 
 4. **Run it as a LaunchAgent** so it starts at login and restarts on failure. A
    template is provided at [`deploy/com.example.daikin-aircon.plist`](deploy/com.example.daikin-aircon.plist).
-   Edit the paths and `--address` inside it, then:
+   Edit the paths inside it (the address comes from `.env`, so the template
+   carries no site-specific values), then:
 
    ```bash
    cp deploy/com.example.daikin-aircon.plist ~/Library/LaunchAgents/

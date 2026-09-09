@@ -60,6 +60,37 @@ log = logging.getLogger("daikin")
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(REPO_DIR, "aircon_history.db")
 DEFAULT_LOG_FILE = os.path.join(REPO_DIR, "logs", "daikin.log")
+DEFAULT_ENV_FILE = os.path.join(REPO_DIR, ".env")
+
+
+def load_env_file(path=DEFAULT_ENV_FILE):
+    """Read simple KEY=VALUE lines from `path` into os.environ.
+
+    Deliberately tiny (no python-dotenv dependency): blank lines and #comments
+    are skipped, surrounding quotes are stripped, and variables already set in
+    the real environment win. Missing file is not an error.
+
+    This exists mainly for launchd: a LaunchAgent runs with a minimal
+    environment and never sources a shell profile, so an exported variable
+    would not reach the service - but a file next to the code does.
+    """
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return {}
+    loaded = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded[key] = value
+    return loaded
 LOG_RETENTION_DAYS = 180   # daily rotation, ~6 months kept
 
 
@@ -885,8 +916,12 @@ def selftest() -> int:
 
 
 def main():
+    load_env_file()   # before argparse, so --address can default to $DAIKIN_ADDRESS
+
     p = argparse.ArgumentParser(description="Shared web control for a Daikin BRC1H.")
-    p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
+    p.add_argument("--address", default=os.environ.get("DAIKIN_ADDRESS"),
+                   help="BLE address / CoreBluetooth UUID of the controller "
+                        "(default: $DAIKIN_ADDRESS, which <repo>/.env can supply)")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
     p.add_argument("--port", type=int, default=80, help="port (default 80)")
     p.add_argument("--db", default=DEFAULT_DB,
@@ -900,7 +935,9 @@ def main():
         raise SystemExit(selftest())
 
     if not args.address:
-        p.error("--address is required (get it from: python brc1h_spike.py --scan)")
+        p.error("no controller address: pass --address, or set DAIKIN_ADDRESS in the "
+                "environment or in <repo>/.env (get the address from: "
+                "python brc1h_spike.py --scan)")
 
     setup_file_logging(args.log_file)
     log.info("Logging to %s (daily rotation, %d days kept)", args.log_file, LOG_RETENTION_DAYS)

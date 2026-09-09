@@ -11,7 +11,8 @@
 # Usage:
 #   ./debug_setpoint.sh [BLE_ADDRESS]
 #
-#   The address is required: pass it as the first argument or set DAIKIN_ADDRESS.
+#   The address is required: pass it as the first argument, set DAIKIN_ADDRESS,
+#   or put DAIKIN_ADDRESS in <repo>/.env (see .env.example).
 #   Find it with: python3 brc1h_spike.py --scan
 #
 #   1. Run it.
@@ -22,16 +23,25 @@
 #   4. The script prints the captured set_setpoint: lines (also saved to $LOG).
 #
 # Overrides (env vars):
-#   DAIKIN_ADDRESS=<uuid>    controller address (if not passed as $1)
+#   DAIKIN_ADDRESS=<uuid>    controller address (if not passed as $1; also
+#                            read from <repo>/.env)
 #   PYTHON=/path/to/python   interpreter to use (default: python3)
 #   LOG=/path/to/log         log file (default: /tmp/daikin-setpoint-debug.log)
 set -uo pipefail
 
 cd "$(dirname "$0")"
 
+# Pick up DAIKIN_ADDRESS from .env too (the same file the server reads), unless
+# it is already set in the environment.
+if [ -z "${DAIKIN_ADDRESS:-}" ] && [ -f .env ]; then
+  DAIKIN_ADDRESS=$(sed -n -E 's/^[[:space:]]*DAIKIN_ADDRESS[[:space:]]*=[[:space:]]*//p' .env | tail -1)
+  DAIKIN_ADDRESS=${DAIKIN_ADDRESS%\"}; DAIKIN_ADDRESS=${DAIKIN_ADDRESS#\"}
+  DAIKIN_ADDRESS=${DAIKIN_ADDRESS%\'}; DAIKIN_ADDRESS=${DAIKIN_ADDRESS#\'}
+fi
+
 ADDR="${1:-${DAIKIN_ADDRESS:-}}"
 if [ -z "$ADDR" ]; then
-  echo "error: no controller address. Pass it as the first argument or set DAIKIN_ADDRESS." >&2
+  echo "error: no controller address. Pass it as \$1, set DAIKIN_ADDRESS, or put it in .env." >&2
   echo "       Find it with: python3 brc1h_spike.py --scan" >&2
   exit 2
 fi
