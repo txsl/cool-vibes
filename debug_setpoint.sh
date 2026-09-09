@@ -11,6 +11,9 @@
 # Usage:
 #   ./debug_setpoint.sh [BLE_ADDRESS]
 #
+#   The address is required: pass it as the first argument or set DAIKIN_ADDRESS.
+#   Find it with: python3 brc1h_spike.py --scan
+#
 #   1. Run it.
 #   2. Open the web page and change the temperature by a WHOLE degree
 #      (e.g. 24 -> 25). The whole-degree step also tests whether the unit
@@ -19,13 +22,19 @@
 #   4. The script prints the captured set_setpoint: lines (also saved to $LOG).
 #
 # Overrides (env vars):
+#   DAIKIN_ADDRESS=<uuid>    controller address (if not passed as $1)
 #   PYTHON=/path/to/python   interpreter to use (default: python3)
 #   LOG=/path/to/log         log file (default: /tmp/daikin-setpoint-debug.log)
 set -uo pipefail
 
 cd "$(dirname "$0")"
 
-ADDR="${1:-XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX}"
+ADDR="${1:-${DAIKIN_ADDRESS:-}}"
+if [ -z "$ADDR" ]; then
+  echo "error: no controller address. Pass it as the first argument or set DAIKIN_ADDRESS." >&2
+  echo "       Find it with: python3 brc1h_spike.py --scan" >&2
+  exit 2
+fi
 PYTHON="${PYTHON:-python3}"
 LOG="${LOG:-/tmp/daikin-setpoint-debug.log}"
 

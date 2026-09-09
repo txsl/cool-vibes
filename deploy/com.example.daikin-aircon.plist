@@ -27,7 +27,7 @@
         <string>/Users/YOURNAME/Daikin-Aircon-controller/.venv/bin/python3</string>
         <string>/Users/YOURNAME/Daikin-Aircon-controller/daikin_server.py</string>
         <string>--address</string>
-        <string>XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX</string>
+        <string>REPLACE-WITH-YOUR-CONTROLLER-ADDRESS</string>
     </array>
 
     <key>WorkingDirectory</key>

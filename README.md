@@ -72,7 +72,7 @@ A successful run prints the current power state, mode, setpoint and room
 temperature.
 
 > On macOS, BLE devices are identified by a CoreBluetooth UUID, not a MAC address,
-> so the "address" you pass will look like `XXXXXXXX-XXXX-...`.
+> so the "address" you pass will look like `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`.
 
 ## Running the server
 
@@ -89,8 +89,8 @@ pf — the server prints the exact `pfctl` command if the bind fails.
 Then find the Mac's LAN IP and open the page from any office device:
 
 ```bash
-ipconfig getifaddr en0        # prints the Mac's IP, e.g. 192.168.0.10
-# open http://192.168.0.10/ in a browser
+ipconfig getifaddr en0        # prints the Mac's IP
+# open http://<that-ip>/ in a browser
 ```
 
 Options:
@@ -212,8 +212,8 @@ be managed remotely.
   server fails to re-find the controller and gets stuck, e.g.:
 
   ```
-  Connecting to XXXXXXXX-... ...
-  status read failed: Controller XXXXXXXX-... not found. It may be connected to
+  Connecting to <ADDRESS> ...
+  status read failed: Controller <ADDRESS> not found. It may be connected to
   a phone (close the Madoka app) or out of Bluetooth range.
   ```
 
