@@ -72,28 +72,48 @@ A successful run prints the current power state, mode, setpoint and room
 temperature.
 
 > On macOS, BLE devices are identified by a CoreBluetooth UUID, not a MAC address,
-> so the "address" you pass will look like `XXXXXXXX-XXXX-...`.
+> so the "address" you pass will look like `XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX`.
 
 ## Running the server
 
+Put the controller's address in a `.env` file once — it is gitignored, so this
+deployment's settings stay out of the repo:
+
 ```bash
-python3 daikin_server.py --address <ADDRESS>
+cp .env.example .env
+$EDITOR .env          # set DAIKIN_ADDRESS=<the address from --scan>
 ```
+
+```bash
+sudo python3 daikin_server.py
+```
+
+`--address` still works and overrides `.env`; a `DAIKIN_ADDRESS` already set in
+the environment wins over the file too. Reading `.env` in-process is what makes
+the LaunchAgent below work: launchd starts the server with a minimal
+environment and never sources your shell profile, so an exported variable would
+not reach it.
+
+The default port is **80**, which needs privileges (hence `sudo`). On macOS
+that's a trade-off: ports below 1024 need root, but CoreBluetooth's Bluetooth
+grant is tied to your login session, so running under `sudo` can lose it. If
+Bluetooth breaks, keep running as your user on `--port 8000` and redirect with
+pf — the server prints the exact `pfctl` command if the bind fails.
 
 Then find the Mac's LAN IP and open the page from any office device:
 
 ```bash
-ipconfig getifaddr en0        # prints the Mac's IP, e.g. 192.168.0.10
-# open http://192.168.0.10:8000 in a browser
+ipconfig getifaddr en0        # prints the Mac's IP
+# open http://<that-ip>/ in a browser
 ```
 
 Options:
 
 | Flag | Default | Meaning |
 |------|---------|---------|
-| `--address` | (required) | BLE address / CoreBluetooth UUID of the controller |
+| `--address` | `$DAIKIN_ADDRESS`, else `.env` | BLE address / CoreBluetooth UUID of the controller (required, from any of the three) |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
-| `--port` | `8000` | Port to serve on |
+| `--port` | `80` | Port to serve on (use `8000` to avoid needing root) |
 | `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
 | `--log-file` | `<repo>/logs/daikin.log` | Rotating log file (daily, ~6 months kept) |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |
@@ -154,7 +174,8 @@ be managed remotely.
 
 4. **Run it as a LaunchAgent** so it starts at login and restarts on failure. A
    template is provided at [`deploy/com.example.daikin-aircon.plist`](deploy/com.example.daikin-aircon.plist).
-   Edit the paths and `--address` inside it, then:
+   Edit the paths inside it (the address comes from `.env`, so the template
+   carries no site-specific values), then:
 
    ```bash
    cp deploy/com.example.daikin-aircon.plist ~/Library/LaunchAgents/
@@ -206,8 +227,8 @@ be managed remotely.
   server fails to re-find the controller and gets stuck, e.g.:
 
   ```
-  Connecting to XXXXXXXX-... ...
-  status read failed: Controller XXXXXXXX-... not found. It may be connected to
+  Connecting to <ADDRESS> ...
+  status read failed: Controller <ADDRESS> not found. It may be connected to
   a phone (close the Madoka app) or out of Bluetooth range.
   ```
 

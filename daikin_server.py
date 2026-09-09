@@ -12,11 +12,17 @@ single BLE link, which sidesteps the "only one phone can pair" limitation.
 
 SETUP
     pip3 install bleak fastapi "uvicorn[standard]"
-    python3 daikin_server.py --address <BRC1H address>
+    sudo python3 daikin_server.py --address <BRC1H address>
         (use the address brc1h_spike.py --scan showed for the office unit)
+        (port 80 is the default and needs privileges; see the port note below)
 
-    Then open  http://<this-mac's-LAN-IP>:8000  from any office machine/phone.
+    Then open  http://<this-mac's-LAN-IP>/  from any office machine/phone.
     Find this Mac's IP with:  ipconfig getifaddr en0
+
+    Port 80 (<1024) needs root on macOS, but CoreBluetooth's Bluetooth grant is
+    tied to your login session, so running under sudo can lose it. If Bluetooth
+    breaks under sudo, keep running as your user with --port 8000 and redirect
+    80 -> 8000 with pf (the server prints the exact command if the bind fails).
 
 NOTES
     * The controller must already be BONDED to this Mac (run brc1h_spike.py once
@@ -54,6 +60,37 @@ log = logging.getLogger("daikin")
 REPO_DIR = os.path.dirname(os.path.abspath(__file__))
 DEFAULT_DB = os.path.join(REPO_DIR, "aircon_history.db")
 DEFAULT_LOG_FILE = os.path.join(REPO_DIR, "logs", "daikin.log")
+DEFAULT_ENV_FILE = os.path.join(REPO_DIR, ".env")
+
+
+def load_env_file(path=DEFAULT_ENV_FILE):
+    """Read simple KEY=VALUE lines from `path` into os.environ.
+
+    Deliberately tiny (no python-dotenv dependency): blank lines and #comments
+    are skipped, surrounding quotes are stripped, and variables already set in
+    the real environment win. Missing file is not an error.
+
+    This exists mainly for launchd: a LaunchAgent runs with a minimal
+    environment and never sources a shell profile, so an exported variable
+    would not reach the service - but a file next to the code does.
+    """
+    try:
+        with open(path) as fh:
+            lines = fh.readlines()
+    except FileNotFoundError:
+        return {}
+    loaded = {}
+    for raw in lines:
+        line = raw.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip().strip('"').strip("'")
+        if key and key not in os.environ:
+            os.environ[key] = value
+            loaded[key] = value
+    return loaded
 LOG_RETENTION_DAYS = 180   # daily rotation, ~6 months kept
 
 
@@ -879,10 +916,14 @@ def selftest() -> int:
 
 
 def main():
+    load_env_file()   # before argparse, so --address can default to $DAIKIN_ADDRESS
+
     p = argparse.ArgumentParser(description="Shared web control for a Daikin BRC1H.")
-    p.add_argument("--address", help="BLE address / CoreBluetooth UUID of the controller")
+    p.add_argument("--address", default=os.environ.get("DAIKIN_ADDRESS"),
+                   help="BLE address / CoreBluetooth UUID of the controller "
+                        "(default: $DAIKIN_ADDRESS, which <repo>/.env can supply)")
     p.add_argument("--host", default="0.0.0.0", help="bind host (default 0.0.0.0 = all interfaces)")
-    p.add_argument("--port", type=int, default=8000, help="port (default 8000)")
+    p.add_argument("--port", type=int, default=80, help="port (default 80)")
     p.add_argument("--db", default=DEFAULT_DB,
                    help="SQLite history file (default: <repo>/aircon_history.db)")
     p.add_argument("--log-file", default=DEFAULT_LOG_FILE,
@@ -894,7 +935,9 @@ def main():
         raise SystemExit(selftest())
 
     if not args.address:
-        p.error("--address is required (get it from: python brc1h_spike.py --scan)")
+        p.error("no controller address: pass --address, or set DAIKIN_ADDRESS in the "
+                "environment or in <repo>/.env (get the address from: "
+                "python brc1h_spike.py --scan)")
 
     setup_file_logging(args.log_file)
     log.info("Logging to %s (daily rotation, %d days kept)", args.log_file, LOG_RETENTION_DAYS)
@@ -904,8 +947,26 @@ def main():
     store = HistoryStore(args.db)
     app = build_app(controller, store)
     print(f"\nOffice Aircon server starting.")
-    print(f"Open http://<this-mac-ip>:{args.port}  (find the IP with: ipconfig getifaddr en0)\n")
-    uvicorn.run(app, host=args.host, port=args.port)
+    suffix = "" if args.port == 80 else f":{args.port}"
+    print(f"Open http://<this-mac-ip>{suffix}  (find the IP with: ipconfig getifaddr en0)\n")
+    try:
+        uvicorn.run(app, host=args.host, port=args.port)
+    except PermissionError:
+        # Ports below 1024 need root on macOS, but CoreBluetooth's Bluetooth
+        # grant is tied to the logged-in user session - running the whole
+        # server under sudo can lose that grant. Prefer a pf redirect (80->8000)
+        # while still running as the normal user, or pass --port 8000.
+        log.error("Permission denied binding port %d.", args.port)
+        print(
+            f"\nCould not bind port {args.port} (ports <1024 need privileges on macOS).\n"
+            "Options:\n"
+            "  - Keep running as your normal user and redirect 80 -> 8000 with pf:\n"
+            "      echo 'rdr pass inet proto tcp from any to any port 80 -> 127.0.0.1 port 8000' | sudo pfctl -ef -\n"
+            "      then start with: --port 8000\n"
+            "  - Or run this server with sudo (note: CoreBluetooth may lose its\n"
+            "    Bluetooth permission outside your login session).\n"
+        )
+        raise SystemExit(1)
 
 
 if __name__ == "__main__":

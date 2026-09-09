@@ -6,13 +6,16 @@
   CoreBluetooth needs) - NOT a system LaunchDaemon.
 
   Setup:
-    1. Edit the paths below: replace YOURNAME and the repo path, and set the
-       correct --address for your controller.
-    2. Copy it into place:
+    1. Edit the paths below: replace YOURNAME and the repo path.
+    2. Put your controller's address in <repo>/.env (see .env.example):
+         DAIKIN_ADDRESS=<uuid from: python3 brc1h_spike.py --scan>
+       The server reads .env itself - launchd never sources a shell profile,
+       so an exported variable would not reach it.
+    3. Copy it into place:
          cp deploy/com.example.daikin-aircon.plist ~/Library/LaunchAgents/
-    3. Load it:
+    4. Load it:
          launchctl load -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
-    4. Stop / unload it (clean shutdown, sends SIGTERM):
+    5. Stop / unload it (clean shutdown, sends SIGTERM):
          launchctl unload -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
 
   Logs are written to ~/Library/Logs/daikin-aircon.log
@@ -26,8 +29,6 @@
     <array>
         <string>/Users/YOURNAME/Daikin-Aircon-controller/.venv/bin/python3</string>
         <string>/Users/YOURNAME/Daikin-Aircon-controller/daikin_server.py</string>
-        <string>--address</string>
-        <string>XXXXXXXX-XXXX-XXXX-XXXX-XXXXXXXXXXXX</string>
     </array>
 
     <key>WorkingDirectory</key>
