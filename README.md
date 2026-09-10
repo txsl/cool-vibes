@@ -85,7 +85,7 @@ $EDITOR .env          # set DAIKIN_ADDRESS=<the address from --scan>
 ```
 
 ```bash
-sudo python3 daikin_server.py
+python3 daikin_server.py
 ```
 
 `--address` still works and overrides `.env`; a `DAIKIN_ADDRESS` already set in
@@ -94,11 +94,12 @@ the LaunchAgent below work: launchd starts the server with a minimal
 environment and never sources your shell profile, so an exported variable would
 not reach it.
 
-The default port is **80**, which needs privileges (hence `sudo`). On macOS
-that's a trade-off: ports below 1024 need root, but CoreBluetooth's Bluetooth
-grant is tied to your login session, so running under `sudo` can lose it. If
-Bluetooth breaks, keep running as your user on `--port 8000` and redirect with
-pf — the server prints the exact `pfctl` command if the bind fails.
+The default port is **80**, and it needs no `sudo`: since macOS 10.14 an
+ordinary user can bind ports below 1024 on the wildcard address, which is what
+the default `--host 0.0.0.0` binds. Only a specific address (e.g.
+`--host 127.0.0.1`) still needs root, and the server says so and exits before
+touching Bluetooth. Don't run it under `sudo` — CoreBluetooth's Bluetooth grant
+is tied to your login session, and running as root can lose it.
 
 Then find the Mac's LAN IP and open the page from any office device:
 
@@ -113,7 +114,7 @@ Options:
 |------|---------|---------|
 | `--address` | `$DAIKIN_ADDRESS`, else `.env` | BLE address / CoreBluetooth UUID of the controller (required, from any of the three) |
 | `--host` | `0.0.0.0` | Bind address (all interfaces) |
-| `--port` | `80` | Port to serve on (use `8000` to avoid needing root) |
+| `--port` | `80` | Port to serve on (no root needed on the default `--host`) |
 | `--db` | `<repo>/aircon_history.db` | SQLite file for the logged history time series |
 | `--log-file` | `<repo>/logs/daikin.log` | Rotating log file (daily, ~6 months kept) |
 | `--selftest` | — | Run offline protocol-encoding checks and exit |
@@ -162,6 +163,8 @@ be managed remotely.
 
 2. **Enable automatic login** (System Settings → Users & Groups → Automatically
    log in as …) so the user session — which CoreBluetooth needs — is always active.
+   macOS won't offer this while FileVault is on; without it, someone has to log
+   in after every reboot before the server can start.
 
 3. **Prevent sleep.** A sleeping Mac currently fails to reconnect to the
    controller (see Known issues). Disable sleep:
@@ -182,6 +185,14 @@ be managed remotely.
    launchctl load -w ~/Library/LaunchAgents/com.example.daikin-aircon.plist
    # logs go to ~/Library/Logs/daikin-aircon.log
    ```
+
+   **Load it while you can see the Mac's screen.** launchd runs the Python
+   interpreter directly, so macOS asks again whether *python3* may use Bluetooth
+   — Terminal's grant from the pairing step doesn't carry over. Until someone
+   clicks Allow, the server sits at `Connecting to …` with no error and
+   `/api/status` reports `connected: false`. The grant belongs to the
+   interpreter's resolved path, so rebuilding the venv on a different Python
+   asks again.
 
    Unloading it sends `SIGTERM`, which the server handles as a clean BLE
    disconnect:
