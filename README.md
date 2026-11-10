@@ -121,14 +121,20 @@ Options:
 
 The web page shows room temperature and lets you change power, target
 temperature, mode (Cool/Heat/Auto/Fan/Dry) and fan speed, auto-refreshing every
-10 seconds. The target-temperature buttons step in whole degrees (this unit
-rejects half-degree setpoints) and disable at the min/max the controller
-reports for the current mode.
+10 seconds. The target is set by dragging the arc or with the − / + buttons, in
+whole degrees (this unit rejects half-degree setpoints), within the min/max the
+controller reports for the current mode. Below the controls, a small chart shows
+the last 24 hours.
 
 A background poller logs status to SQLite, and a **`/history`** page (linked from
-the control page) charts room temperature and the target setpoint over the last
-6h / 24h / 3d. Status shown to web clients comes from the poller's cache, so
+the control page) charts room temperature, the target setpoint and the mode
+while running over the last 1h / 6h / 24h / 3d / 7d, with summary stats and a
+hover readout. Status shown to web clients comes from the poller's cache, so
 multiple viewers don't each trigger a Bluetooth read.
+
+The pages live in `web/src/` (two pages plus shared CSS and JS). After editing
+them, run `python3 web/build.py` to regenerate `web/dist/`, which the server
+serves, and commit both.
 
 ## Stopping safely
 

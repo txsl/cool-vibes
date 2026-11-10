@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Office Aircon</title>
+<style>
+/* Contrast targets: primary text >= 15:1, secondary >= 7:1, tertiary >= 4.5:1 on the card,
+   in both themes. "Off" is shown by the switch, the words and a grey arc, never by fading. */
+:root{
+  --page-a:#eef1f5; --page-b:#dde3ea;
+  --card:rgba(255,255,255,.94); --card-edge:#fff; --card-shadow:0 30px 60px -30px rgba(30,50,80,.35),0 2px 6px rgba(30,50,80,.08);
+  --ink:#0f0f12; --ink2:#3a3a40; --ink3:#5c5c64;
+  --well:rgba(118,118,128,.14); --chip:#fff; --chip-shadow:0 3px 8px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.06);
+  --track:rgba(118,118,128,.22); --btn:rgba(118,118,128,.14); --btn-hover:rgba(118,118,128,.22);
+  --switch-off:rgba(120,120,128,.32); --idle:#8e8e96; --link:#0a5cc2;
+  --danger:#c0261c; --warn-bg:#fff1d6; --warn-ink:#7a4a00;
+  --chart-room:#0a6cdc; --chart-target:#3a3a40; --chart-off:rgba(118,118,128,.13); --chart-grid:rgba(60,60,67,.12);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --page-a:#17191d; --page-b:#0c0d10;
+    --card:#232529; --card-edge:rgba(255,255,255,.08); --card-shadow:0 30px 60px -30px #000,0 2px 6px rgba(0,0,0,.4);
+    --ink:#f5f5f7; --ink2:#d1d1d6; --ink3:#a9a9b0;
+    --well:rgba(118,118,128,.26); --chip:#56565c; --chip-shadow:0 3px 8px rgba(0,0,0,.35);
+    --track:rgba(118,118,128,.38); --btn:rgba(118,118,128,.26); --btn-hover:rgba(118,118,128,.36);
+    --switch-off:rgba(120,120,128,.42); --idle:#7c7c84; --link:#6cb6ff;
+    --danger:#ff6b61; --warn-bg:rgba(255,176,32,.16); --warn-ink:#ffcf7a;
+    --chart-room:#5ab0ff; --chart-target:#d1d1d6; --chart-off:rgba(118,118,128,.2); --chart-grid:rgba(235,235,245,.1);
+  }
+}
+:root[data-theme="dark"]{
+  --page-a:#17191d; --page-b:#0c0d10;
+  --card:#232529; --card-edge:rgba(255,255,255,.08); --card-shadow:0 30px 60px -30px #000,0 2px 6px rgba(0,0,0,.4);
+  --ink:#f5f5f7; --ink2:#d1d1d6; --ink3:#a9a9b0;
+  --well:rgba(118,118,128,.26); --chip:#56565c; --chip-shadow:0 3px 8px rgba(0,0,0,.35);
+  --track:rgba(118,118,128,.38); --btn:rgba(118,118,128,.26); --btn-hover:rgba(118,118,128,.36);
+  --switch-off:rgba(120,120,128,.42); --idle:#7c7c84; --link:#6cb6ff;
+  --danger:#ff6b61; --warn-bg:rgba(255,176,32,.16); --warn-ink:#ffcf7a;
+  --chart-room:#5ab0ff; --chart-target:#d1d1d6; --chart-off:rgba(118,118,128,.2); --chart-grid:rgba(235,235,245,.1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:linear-gradient(160deg,var(--page-a),var(--page-b)) fixed;color:var(--ink);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+  min-height:100svh;display:flex;justify-content:center;padding:32px 16px}
+button{font:inherit;color:inherit;-webkit-tap-highlight-color:transparent;cursor:pointer}
+svg{display:block}
+.stack{width:min(420px,100%);display:flex;flex-direction:column;align-self:center}
+.stack.wide{width:min(760px,100%);align-self:flex-start}
+
+.card{width:100%;border-radius:30px;padding:24px 22px 22px;background:var(--card);box-shadow:inset 0 0 0 1px var(--card-edge),var(--card-shadow)}
+.top{display:flex;justify-content:space-between;align-items:center}
+.name{font-weight:600;font-size:18px;letter-spacing:-.01em}
+.sub{font-size:14px;color:var(--ink2);margin-top:2px}
+
+.switch{width:51px;height:31px;border-radius:16px;border:0;padding:0;position:relative;background:var(--switch-off);transition:background .25s}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
+  box-shadow:0 3px 8px rgba(0,0,0,.18),0 1px 1px rgba(0,0,0,.12);transition:left .25s cubic-bezier(.3,1.3,.5,1)}
+.switch[aria-checked="true"]{background:#34c759}
+.switch[aria-checked="true"]::after{left:22px}
+.switch:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+
+.arcwrap{position:relative;width:100%;max-width:340px;margin:14px auto 0;touch-action:none;user-select:none;cursor:pointer}
+.arcwrap:focus-visible{outline:3px solid var(--accent);outline-offset:6px;border-radius:12px}
+.arcwrap svg{width:100%;height:auto;overflow:visible}
+.center{position:absolute;left:0;right:0;bottom:6%;text-align:center;pointer-events:none}
+.center .cap{font-size:13px;font-weight:600;color:var(--ink2);height:18px}
+.center .t{font:300 68px/1 -apple-system,"SF Pro Display",system-ui,sans-serif;letter-spacing:-.03em;font-variant-numeric:tabular-nums;margin-top:2px}
+.center .t sup{font-size:26px;vertical-align:32px;font-weight:400}
+.center .s{font-size:14px;color:var(--ink2);margin-top:2px}
+.is-off .center .t{color:var(--ink3)}
+
+.stepper{display:flex;justify-content:center;gap:28px;margin-top:10px}
+.stepper button{width:46px;height:46px;border-radius:50%;border:0;background:var(--btn);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.stepper button:hover{background:var(--btn-hover)}
+.stepper button:active{transform:scale(.95)}
+.stepper svg{width:18px;height:18px}
+
+.seg{position:relative;display:grid;grid-template-columns:repeat(5,1fr);background:var(--well);border-radius:14px;padding:3px;margin-top:20px}
+.seg .pill{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/5);border-radius:11px;background:var(--chip);box-shadow:var(--chip-shadow);transition:transform .35s cubic-bezier(.3,1.2,.4,1)}
+.seg button{position:relative;border:0;background:none;padding:9px 0 7px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:500;color:var(--ink2)}
+.seg button svg{width:21px;height:21px}
+.seg button.on{color:var(--ink);font-weight:600}
+.seg button.on svg{color:var(--accent)}
+
+.fan{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+.fan .l{font-size:14px;font-weight:500;color:var(--ink2)}
+.opts{display:flex;gap:2px;background:var(--well);border-radius:12px;padding:3px}
+.opts button{border:0;background:none;border-radius:9px;padding:6px 13px;font-size:13px;font-weight:500;color:var(--ink2)}
+.opts button.on{background:var(--chip);color:var(--ink);font-weight:600;box-shadow:var(--chip-shadow)}
+
+/* ---------- charts ---------- */
+.chartcard{margin-top:16px;padding:18px 18px 14px}
+.chead{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:12px}
+.ctitle{font-weight:600;font-size:15px}
+.legend{font-size:12px;color:var(--ink2);margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.legend .k{display:inline-block;width:14px;height:3px;border-radius:2px;margin-left:6px}
+.legend .k:first-child{margin-left:0}
+.legend .room{background:var(--chart-room)}
+.legend .target{background:repeating-linear-gradient(90deg,var(--chart-target) 0 4px,transparent 4px 7px)}
+.legend .runk{height:10px;width:12px;background:color-mix(in srgb,var(--chart-room) 22%,transparent);border-radius:3px}
+.more{color:var(--link);text-decoration:none;font-size:14px;font-weight:500;white-space:nowrap}
+.chart{width:100%;display:block}
+.empty{display:none;text-align:center;color:var(--ink2);padding:40px 0;font-size:14px}
+
+.statusline{min-height:20px;text-align:center;font-size:13px;color:var(--ink2);margin:10px 0 0}
+.statusline.err{color:var(--danger)}
+.filter{display:none;margin-top:14px;padding:9px 12px;border-radius:12px;background:var(--warn-bg);color:var(--warn-ink);font-size:13px;font-weight:500;text-align:center}
+.filter.show{display:block}
+.offline .ctl{opacity:.55;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="stack">
+<main class="card" id="card">
+  <div class="top">
+    <div><div class="name">Office Aircon</div><div class="sub" id="sub">Connecting…</div></div>
+    <button class="switch ctl" id="pow" role="switch" aria-checked="false" aria-label="Power"></button>
+  </div>
+  <div class="arcwrap ctl" id="arc" role="slider" tabindex="0" aria-label="Target temperature">
+    <svg viewBox="0 0 320 190" id="arcSvg"></svg>
+    <div class="center"><div class="cap" id="cap"></div><div class="t" id="t">--</div><div class="s" id="s"></div></div>
+  </div>
+  <div class="stepper ctl">
+    <button id="dn" aria-label="Cooler"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+    <button id="up" aria-label="Warmer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg></button>
+  </div>
+  <div class="seg ctl" id="modes"><div class="pill" id="pill"></div></div>
+  <div class="fan ctl"><span class="l">Fan</span><div class="opts" id="fans"></div></div>
+  <div class="filter" id="filter">Filter needs cleaning</div>
+</main>
+<div class="statusline" id="statusline"></div>
+
+<section class="card chartcard">
+  <div class="chead">
+    <div><div class="ctitle">Last 24 hours</div><div class="legend"><span class="k room"></span>Room <span class="k target"></span>Target <span class="k runk"></span>Running</div></div>
+    <a class="more" href="/history">History ›</a>
+  </div>
+  <canvas id="mini" class="chart" style="height:150px"></canvas>
+  <div class="empty" id="miniEmpty">Collecting data, check back in a minute.</div>
+</section>
+</div>
+
+<script>
+const $=id=>document.getElementById(id);
+const dark=matchMedia('(prefers-color-scheme: dark)');
+const isDark=()=>{const t=document.documentElement.dataset.theme;return t?t==='dark':dark.matches};
+const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// The server API. A preview build swaps in window.AIRCON_API with canned data.
+const API=window.AIRCON_API||{
+  async status(){const r=await fetch('/api/status');return r.json()},
+  async history(hours){const r=await fetch('/api/history?hours='+hours);return r.json()},
+  async post(path,body){
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error((await r.text())||r.statusText);
+    return r.json();
+  }
+};
+
+const MODE_NAME={0:'Fan',1:'Dry',2:'Auto',3:'Cool',4:'Heat',5:'Vent'};
+const FAN_NAME={0:'Auto',1:'Low',2:'Low-Med',3:'Medium',4:'Med-High',5:'High'};
+const MODE_COLOR={3:['#0a6cdc','#5ab0ff'],4:['#d4520c','#ff9d5c'],2:['#7038d6','#b994ff'],0:['#4a5568','#c3ccd8'],1:['#08806f','#4fd8c2'],5:['#4a5568','#c3ccd8']};
+
+// The controller reports whole degrees, so the raw room series flickers between
+// neighbours. Charts draw a 15-minute centred average (rs); tooltips show the raw value.
+function parseHistory(j){
+  const d=j.t.map((ts,i)=>({t:ts*1000,room:j.room[i],sp:j.sp[i],power:j.power[i],mode:j.mode[i],fan:j.fan[i]})).filter(x=>x.room!=null);
+  const half=7.5*60*1000;let a=0,b=0,sum=0;
+  for(let i=0;i<d.length;i++){
+    while(b<d.length&&d[b].t<=d[i].t+half){sum+=d[b].room;b++}
+    while(d[a].t<d[i].t-half){sum-=d[a].room;a++}
+    d[i].rs=sum/(b-a);
+  }
+  return d;
+}
+// Consecutive samples that share a state, as [tStart, tEnd, sample] runs, split at data gaps.
+function runs(data,t0,key){
+  const out=[];let cur=null;
+  for(let i=1;i<data.length;i++){const a=data[i-1],b=data[i];if(b.t<t0)continue;
+    if(b.t-a.t>=GAP){cur=null;continue}
+    const k=key(a);if(k==null){cur=null;continue}
+    if(cur&&cur.k===k&&cur.end===a.t)cur.end=b.t;else{cur={k,start:Math.max(a.t,t0),end:b.t,s:a};out.push(cur)}}
+  return out;
+}
+
+const GAP=10*60*1000;   // a hole longer than this (server down) breaks the lines
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const hhmm=d=>`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+// Room temperature (solid) and target (dashed, only while running) over time,
+// with off periods shaded. `compact` is the homepage version: fewer labels,
+// no mode strip. Returns the geometry so a caller can map pointer x to a sample.
+function drawChart(cv,data,opt={}){
+  if(opt.empty)opt.empty.style.display=data.length<2?'block':'none';
+  cv.style.display=data.length<2?'none':'block';
+  if(data.length<2)return null;
+  const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;
+  const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  const C={room:cssVar('--chart-room'),target:cssVar('--chart-target'),off:cssVar('--chart-off'),grid:cssVar('--chart-grid'),label:cssVar('--ink3')};
+  const strip=opt.compact?0:8;
+  const pad=opt.compact?{l:30,r:4,t:6,b:20}:{l:36,r:8,t:10,b:36+strip+6};
+  const x0=pad.l,x1=W-pad.r,y0=pad.t,y1=H-pad.b;
+  const t1=opt.end||data[data.length-1].t,t0=opt.span?t1-opt.span:data[0].t;
+  let lo=Infinity,hi=-Infinity;
+  for(const d of data){if(d.t<t0)continue;lo=Math.min(lo,d.room);hi=Math.max(hi,d.room);if(d.power&&d.sp!=null){lo=Math.min(lo,d.sp);hi=Math.max(hi,d.sp)}}
+  lo=Math.floor(lo-1);hi=Math.ceil(hi+1);if(hi-lo<4){const m=(hi+lo)/2;lo=Math.floor(m-2);hi=Math.ceil(m+2)}
+  const X=t=>x0+(t-t0)/(t1-t0)*(x1-x0),Y=v=>y1-(v-lo)/(hi-lo)*(y1-y0);
+
+  // running periods, tinted by mode
+  const di=isDark()?1:0,running=runs(data,t0,d=>d.power?d.mode:null);
+  for(const r of running){g.fillStyle=(MODE_COLOR[r.k]||MODE_COLOR[0])[di]+(di?'2e':'1f');const xa=X(r.start);g.fillRect(xa,y0,X(r.end)-xa,y1-y0)}
+
+  // grid + y labels
+  g.font='500 11px -apple-system,system-ui,sans-serif';g.lineWidth=1;g.textBaseline='middle';
+  const yStep=(hi-lo)<=6?1:(hi-lo)<=12?2:5;
+  for(let v=Math.ceil(lo/yStep)*yStep;v<=hi;v+=yStep){const y=Math.round(Y(v))+.5;
+    g.strokeStyle=C.grid;g.beginPath();g.moveTo(x0,y);g.lineTo(x1,y);g.stroke();
+    g.fillStyle=C.label;g.textAlign='right';g.fillText(v+'°',x0-6,y)}
+
+  // x ticks on clock-aligned local times
+  const spanMin=(t1-t0)/60000;
+  const stepMin=opt.compact?(spanMin<=360?60:360):spanMin<=90?15:spanMin<=180?30:spanMin<=540?60:spanMin<=1080?180:spanMin<=2160?360:spanMin<=4800?720:1440;
+  const start=new Date(t0);start.setHours(0,0,0,0);g.textAlign='center';g.textBaseline='alphabetic';let prevDay=null;
+  for(let k=0;;k++){const td=new Date(start);td.setMinutes(k*stepMin);const tk=td.getTime();if(tk>t1)break;if(tk<t0)continue;
+    const x=Math.round(X(tk))+.5;g.strokeStyle=C.grid;g.beginPath();g.moveTo(x,y0);g.lineTo(x,y1);g.stroke();
+    const tx=Math.min(Math.max(x,x0+16),x1-16);g.fillStyle=C.label;
+    g.fillText(stepMin>=1440?`${td.getDate()} ${MON[td.getMonth()]}`:hhmm(td),tx,y1+14);
+    if(!opt.compact&&stepMin<1440&&td.getDate()!==prevDay)g.fillText(`${td.getDate()} ${MON[td.getMonth()]}`,tx,y1+27);
+    prevDay=td.getDate()}
+
+  // mode strip: what the unit was doing, coloured by mode, empty while off
+  if(strip){const sy=H-strip-2;
+    g.fillStyle=C.off;g.beginPath();g.roundRect(x0,sy,x1-x0,strip,3);g.fill();
+    for(const r of running){g.fillStyle=(MODE_COLOR[r.k]||MODE_COLOR[0])[di];const xa=X(r.start);g.fillRect(xa,sy,Math.max(X(r.end)-xa,1.5),strip)}}
+
+  // target, stepped, only while running
+  g.save();g.strokeStyle=C.target;g.lineWidth=1.6;g.setLineDash([4,3]);g.beginPath();let on=false;
+  for(let i=0;i<data.length;i++){const d=data[i],p=data[i-1];if(d.t<t0)continue;
+    const run=d.power&&d.sp!=null&&!(p&&d.t-p.t>=GAP);
+    if(run){const x=X(d.t),y=Y(d.sp);if(!on||!p||!p.power||p.sp==null){g.moveTo(x,y)}else{g.lineTo(x,Y(p.sp));g.lineTo(x,y)}on=true}else on=false}
+  g.stroke();g.restore();
+
+  // room temperature, with a soft fill underneath; each unbroken stretch is its own shape
+  const segs=[];let seg=null;
+  for(let i=0;i<data.length;i++){const d=data[i],p=data[i-1];if(d.t<t0)continue;
+    if(!seg||(p&&d.t-p.t>=GAP)){seg=[];segs.push(seg)}seg.push([X(d.t),Y(d.rs)])}
+  const grad=g.createLinearGradient(0,y0,0,y1);grad.addColorStop(0,C.room+'38');grad.addColorStop(1,C.room+'00');
+  g.strokeStyle=C.room;g.lineWidth=2.2;g.lineJoin='round';
+  for(const sg of segs){if(sg.length<2)continue;
+    const line=new Path2D();sg.forEach(([x,y],i)=>i?line.lineTo(x,y):line.moveTo(x,y));
+    const area=new Path2D(line);area.lineTo(sg[sg.length-1][0],y1);area.lineTo(sg[0][0],y1);area.closePath();
+    g.fillStyle=grad;g.fill(area);g.stroke(line)}
+
+  // hover crosshair
+  if(opt.hover!=null){const d=data[opt.hover],x=X(d.t);
+    g.strokeStyle=C.label;g.lineWidth=1;g.beginPath();g.moveTo(x+.5,y0);g.lineTo(x+.5,y1);g.stroke();
+    const dot=(v,c)=>{g.fillStyle=c;g.beginPath();g.arc(x,Y(v),4,0,7);g.fill();g.strokeStyle=cssVar('--card')||'#fff';g.lineWidth=2;g.stroke()};
+    if(d.power&&d.sp!=null)dot(d.sp,C.target);dot(d.rs,C.room)}
+  return {X,t0,t1,x0,x1};
+}
+
+const MODES=[
+  {id:3,k:'cool',n:'Cool',a:['#0a6cdc','#5ab0ff'],cap:'Cooling to'},
+  {id:4,k:'heat',n:'Heat',a:['#d4520c','#ff9d5c'],cap:'Heating to'},
+  {id:2,k:'auto',n:'Auto',a:['#7038d6','#b994ff'],cap:'Keeping at'},
+  {id:0,k:'fan',n:'Fan',a:['#4a5568','#c3ccd8'],cap:'Fan only'},
+  {id:1,k:'dry',n:'Dry',a:['#08806f','#4fd8c2'],cap:'Drying'}
+];
+const FANS=[{id:1,n:'Low'},{id:3,n:'Medium'},{id:5,n:'High'}];
+const ICON={
+  cool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2M4 10.5l3.4-.5L6 7M18 17l-1.4-3 3.4-.5M4 13.5l3.4.5L6 17M18 7l-1.4 3 3.4.5"/></svg>',
+  heat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>',
+  auto:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-13.7 5.7M4 12a8 8 0 0 1 13.7-5.7"/><path d="M18 3v3.5h-3.5M6 21v-3.5h3.5"/><path d="M9.5 14.5l2.5-6 2.5 6M10.4 12.6h3.2"/></svg>',
+  fan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 10.4C11 7 11.5 3.5 14 3.5c2.4 0 2.6 3.6-2 6.9M13.6 12c3.4-1 6.9-.5 6.9 2 0 2.4-3.6 2.6-6.9-2M12 13.6c1 3.4.5 6.9-2 6.9-2.4 0-2.6-3.6 2-6.9M10.4 12C7 13 3.5 12.5 3.5 10c0-2.4 3.6-2.6 6.9 2"/></svg>',
+  dry:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5" stroke-linecap="round"/></svg>'
+};
+const modeOf=id=>MODES.find(m=>m.id===id)||MODES[0];
+const usesSet=m=>['cool','heat','auto'].includes(m.k);
+// Display state. Server state replaces it on every poll and command response;
+// `pending` holds a setpoint the user is still dragging so a poll can't snap it back.
+let st=null, busy=false, pending=null, sendTimer=null;
+let MIN=16,MAX=32;
+
+const svg=$('arcSvg'),CX=160,CY=170,R=140;
+const pt=v=>{const t=Math.PI*(1-(v-MIN)/(MAX-MIN));return[CX+R*Math.cos(t),CY-R*Math.sin(t)]};
+const arcPath=(a,b)=>{const[x1,y1]=pt(a),[x2,y2]=pt(b);return`M${x1} ${y1} A${R} ${R} 0 0 1 ${x2} ${y2}`};
+function drawArcFrame(){
+  svg.innerHTML=`<defs><filter id="sh" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-opacity=".3"/></filter></defs>
+  <path d="${arcPath(MIN,MAX)}" fill="none" style="stroke:var(--track)" stroke-width="22" stroke-linecap="round"/>
+  <path id="act" fill="none" stroke-width="22" stroke-linecap="round"/>
+  <circle id="roomDot" r="3.5" style="fill:var(--ink)"/>
+  <circle id="hdl" r="15" fill="#fff" filter="url(#sh)"/><circle id="hdlCore" r="5"/>
+  <text x="${pt(MIN)[0]}" y="${CY+28}" text-anchor="middle" font-size="12" font-weight="500" style="fill:var(--ink3)">${MIN}°</text>
+  <text x="${pt(MAX)[0]}" y="${CY+28}" text-anchor="middle" font-size="12" font-weight="500" style="fill:var(--ink3)">${MAX}°</text>`;
+}
+drawArcFrame();
+$('modes').insertAdjacentHTML('beforeend',MODES.map(m=>`<button data-id="${m.id}">${ICON[m.k]}<span>${m.n}</span></button>`).join(''));
+$('fans').innerHTML=FANS.map(f=>`<button data-id="${f.id}">${f.n}</button>`).join('');
+
+function render(){
+  const card=$('card');
+  if(!st||!st.connected){card.classList.add('offline');$('sub').textContent='Controller offline, reconnecting…';return}
+  card.classList.remove('offline');
+  if(st.min_setpoint!=null&&st.max_setpoint!=null&&(st.min_setpoint!==MIN||st.max_setpoint!==MAX)){MIN=st.min_setpoint;MAX=st.max_setpoint;drawArcFrame()}
+  const m=modeOf(st.mode_id),on=!!st.power_on,acc=m.a[isDark()?1:0];
+  const sp=pending??st.setpoint, room=st.room_temp;
+  card.style.setProperty('--accent',acc);card.classList.toggle('is-off',!on);
+  const show=usesSet(m)&&sp!=null;
+  const hasRoom=room!=null, lo=hasRoom?Math.min(room,sp):sp, hi=hasRoom?Math.max(room,sp):sp;
+  // The coloured span runs from the room temperature to the target: the work the unit is doing.
+  $('act').setAttribute('d',on&&show&&hi>lo?arcPath(Math.max(MIN,lo),Math.min(MAX,hi)):'');$('act').setAttribute('stroke',acc);
+  if(hasRoom){const[rx,ry]=pt(Math.max(MIN,Math.min(MAX,room)));$('roomDot').setAttribute('cx',rx);$('roomDot').setAttribute('cy',ry)}
+  $('roomDot').style.opacity=hasRoom?1:0;
+  if(show){const[hx,hy]=pt(sp);for(const id of ['hdl','hdlCore']){$(id).setAttribute('cx',hx);$(id).setAttribute('cy',hy)}}
+  for(const id of ['hdl','hdlCore'])$(id).style.opacity=show?1:0;
+  $('hdlCore').setAttribute('fill',on?acc:'var(--idle)');
+  $('cap').textContent=on?m.cap:'Off';
+  $('t').innerHTML=show?`${Math.round(sp)}<sup>°</sup>`:'—';
+  $('s').textContent=hasRoom?`Room ${room}°`:'';
+  const fan=FANS.find(f=>f.id===st.fan_id);
+  $('sub').textContent=on?`${m.n} · ${fan?fan.n:st.fan||''} fan`:'Off';
+  $('pow').setAttribute('aria-checked',on);
+  $('arc').setAttribute('aria-valuenow',sp);$('arc').setAttribute('aria-valuemin',MIN);$('arc').setAttribute('aria-valuemax',MAX);
+  const idx=MODES.findIndex(x=>x.id===st.mode_id);
+  $('pill').style.opacity=idx<0?0:1;$('pill').style.transform=`translateX(${Math.max(idx,0)*100}%)`;
+  document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',+b.dataset.id===st.mode_id));
+  document.querySelectorAll('#fans button').forEach(b=>b.classList.toggle('on',+b.dataset.id===st.fan_id));
+  $('filter').classList.toggle('show',!!st.filter_dirty);
+}
+function status(msg,isErr){const e=$('statusline');e.textContent=msg||'';e.classList.toggle('err',!!isErr)}
+
+async function send(path,body,optimistic){
+  if(!st||!st.connected)return;
+  Object.assign(st,optimistic);render();
+  busy=true;status('Sending…');
+  try{st=await API.post(path,body);status('')}
+  catch(e){status(`Couldn't reach the aircon: ${e.message}`,true);poll(true)}
+  finally{busy=false;render()}
+}
+const setPower=on=>send('/api/power',{on},{power_on:on});
+const setMode=id=>send('/api/mode',{mode:id},{mode_id:id,power_on:st&&st.power_on});
+const setFan=id=>send('/api/fan',{speed:id},{fan_id:id});
+// Coalesce rapid +/- taps and drags into one setpoint write.
+function nudgeSet(v,immediate){
+  if(!st)return; v=Math.max(MIN,Math.min(MAX,Math.round(v)));
+  pending=v;render();clearTimeout(sendTimer);
+  sendTimer=setTimeout(async()=>{const t=pending;await send('/api/setpoint',{temp:t},{setpoint:t});if(pending===t)pending=null;render()},immediate?0:450);
+}
+
+$('pow').onclick=()=>st&&setPower(!st.power_on);
+$('modes').onclick=e=>{const b=e.target.closest('button');if(b)setMode(+b.dataset.id)};
+$('fans').onclick=e=>{const b=e.target.closest('button');if(b)setFan(+b.dataset.id)};
+$('up').onclick=()=>st&&nudgeSet((pending??st.setpoint)+1);
+$('dn').onclick=()=>st&&nudgeSet((pending??st.setpoint)-1);
+const arc=$('arc');
+const valAt=e=>{const r=svg.getBoundingClientRect(),sc=320/r.width,x=(e.clientX-r.left)*sc-CX,y=CY-(e.clientY-r.top)*sc;
+  return MIN+(1-Math.atan2(Math.max(y,0),x)/Math.PI)*(MAX-MIN)};
+let drag=false;
+arc.addEventListener('pointerdown',e=>{if(!st||!usesSet(modeOf(st.mode_id)))return;drag=true;arc.setPointerCapture(e.pointerId);pending=Math.round(valAt(e));render()});
+arc.addEventListener('pointermove',e=>{if(!drag)return;const v=Math.max(MIN,Math.min(MAX,Math.round(valAt(e))));if(v!==pending){pending=v;render()}});
+arc.addEventListener('pointerup',()=>{if(!drag)return;drag=false;if(pending!=null&&pending!==st.setpoint)nudgeSet(pending,true);else{pending=null;render()}});
+arc.addEventListener('keydown',e=>{const k={ArrowUp:1,ArrowRight:1,ArrowDown:-1,ArrowLeft:-1}[e.key];if(k&&st){e.preventDefault();nudgeSet((pending??st.setpoint)+k)}});
+
+async function poll(once){
+  if(!busy&&!drag){
+    try{st=await API.status()}catch(e){st={connected:false}}
+    render();
+  }
+  if(!once)setTimeout(poll,10000);
+}
+// The mini chart: room vs target over the last day, off periods shaded.
+let HIST=[];
+async function loadHist(){
+  try{HIST=parseHistory(await API.history(24))}catch(e){HIST=[]}
+  drawMini();
+}
+function drawMini(){drawChart($('mini'),HIST,{compact:true,empty:$('miniEmpty'),span:24*3600e3,end:Date.now()})}
+addEventListener('resize',drawMini);
+dark.addEventListener('change',()=>{render();drawMini()});
+poll();loadHist();setInterval(loadHist,5*60*1000);
+</script>
+</body>
+</html>

@@ -1,0 +1,98 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aircon History</title>
+<style>
+/*__SHARED_CSS__*/
+.back{color:var(--link);text-decoration:none;font-size:15px;font-weight:500;display:inline-block;margin:0 4px 14px}
+h1{font:600 26px/1.2 -apple-system,"SF Pro Display",system-ui,sans-serif;letter-spacing:-.02em;margin:0 4px 4px}
+.device{color:var(--ink2);font-size:13px;margin:0 4px 18px;min-height:19px}
+.ranges{margin-bottom:16px;display:inline-flex;align-self:flex-start}
+.ranges button{padding:7px 14px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.stat{background:var(--card);border-radius:18px;padding:14px 16px;box-shadow:inset 0 0 0 1px var(--card-edge),0 1px 3px rgba(0,0,0,.06)}
+.stat .k{font-size:12px;font-weight:500;color:var(--ink2)}
+.stat .v{font:500 22px/1.2 -apple-system,"SF Pro Display",system-ui,sans-serif;margin-top:4px;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:13px;color:var(--ink2);font-weight:400}
+@media (max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
+.plot{position:relative}
+.tip{position:absolute;top:8px;pointer-events:none;background:var(--card);color:var(--ink);border-radius:12px;padding:9px 11px;font-size:13px;line-height:1.5;
+  box-shadow:0 8px 24px -8px rgba(0,0,0,.35),inset 0 0 0 1px var(--card-edge);white-space:nowrap;display:none}
+.tip b{font-weight:600}
+.tip .muted{color:var(--ink2)}
+.modekey{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--ink2);margin-top:8px}
+.modekey i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div class="stack wide">
+  <a class="back" href="/">‹ Controls</a>
+  <h1>History</h1>
+  <div class="device" id="device"></div>
+  <div class="opts ranges" id="ranges">
+    <button data-h="1">1h</button><button data-h="6">6h</button><button data-h="24" class="on">24h</button><button data-h="72">3 days</button><button data-h="168">7 days</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">Average room</div><div class="v" id="avg">–</div></div>
+    <div class="stat"><div class="k">Room range</div><div class="v" id="range">–</div></div>
+    <div class="stat"><div class="k">Running</div><div class="v" id="ontime">–</div></div>
+    <div class="stat"><div class="k">Mostly</div><div class="v" id="topmode">–</div></div>
+  </div>
+  <section class="card chartcard" style="margin-top:0">
+    <div class="chead"><div class="legend"><span class="k room"></span>Room <span class="k target"></span>Target <span class="k runk"></span>Running</div></div>
+    <div class="plot"><canvas id="chart" class="chart" style="height:340px"></canvas><div class="tip" id="tip"></div></div>
+    <div class="empty" id="empty">Collecting data, check back in a minute.</div>
+    <div class="modekey" id="modekey"></div>
+  </section>
+</div>
+<script>
+/*__SHARED_JS__*/
+let hours=24,DATA=[],geo=null,hover=null;
+$('modekey').innerHTML='Bar under the chart shows the mode while running: '+[[3,'Cool'],[4,'Heat'],[2,'Auto'],[0,'Fan'],[1,'Dry']].map(([id,n])=>`<span><i style="background:${MODE_COLOR[id][isDark()?1:0]}"></i>${n}</span>`).join('');
+
+function stats(){
+  const t0=Date.now()-hours*3600e3, d=DATA.filter(x=>x.t>=t0);
+  if(d.length<2){for(const id of ['avg','range','ontime','topmode'])$(id).textContent='–';return}
+  let sum=0,lo=Infinity,hi=-Infinity,onMs=0,span=0;const byMode={};
+  for(let i=0;i<d.length;i++){const x=d[i];sum+=x.room;lo=Math.min(lo,x.room);hi=Math.max(hi,x.room);
+    if(i){const dt=x.t-d[i-1].t;if(dt<GAP){span+=dt;if(d[i-1].power){onMs+=dt;byMode[d[i-1].mode]=(byMode[d[i-1].mode]||0)+dt}}}}
+  $('avg').innerHTML=`${(sum/d.length).toFixed(1)}°`;
+  $('range').innerHTML=`${lo}° <small>to</small> ${hi}°`;
+  const h=onMs/3600e3;$('ontime').innerHTML=h<1?`${Math.round(h*60)} <small>min</small>`:`${h.toFixed(h<10?1:0)} <small>h · ${Math.round(onMs/span*100)}%</small>`;
+  const top=Object.entries(byMode).sort((a,b)=>b[1]-a[1])[0];
+  $('topmode').textContent=top?MODE_NAME[top[0]]:'Off';
+}
+function draw(){geo=drawChart($('chart'),DATA,{empty:$('empty'),span:hours*3600e3,end:Date.now(),hover})}
+async function load(){
+  try{const j=await API.history(hours);const i=j.info||{};
+    $('device').textContent=i.model?`Daikin ${i.model} · controller ${i.controller_version||'?'} · comms ${i.comm_version||'?'}`:'';
+    DATA=parseHistory(j)}catch(e){DATA=[]}
+  hover=null;$('tip').style.display='none';stats();draw();
+}
+$('ranges').onclick=e=>{const b=e.target.closest('button');if(!b)return;hours=+b.dataset.h;
+  document.querySelectorAll('#ranges button').forEach(x=>x.classList.toggle('on',x===b));load()};
+
+const cv=$('chart'),tip=$('tip');
+function onMove(e){
+  if(!geo||!DATA.length)return;const r=cv.getBoundingClientRect(),x=e.clientX-r.left;
+  if(x<geo.x0||x>geo.x1){onLeave();return}
+  const t=geo.t0+(x-geo.x0)/(geo.x1-geo.x0)*(geo.t1-geo.t0);
+  let lo=0,hi=DATA.length-1;while(hi-lo>1){const m=(lo+hi)>>1;if(DATA[m].t<t)lo=m;else hi=m}
+  const i=Math.abs(DATA[lo].t-t)<Math.abs(DATA[hi].t-t)?lo:hi,d=DATA[i];
+  if(Math.abs(d.t-t)>GAP){onLeave();return}
+  if(i!==hover){hover=i;draw()}
+  const dt=new Date(d.t);
+  tip.innerHTML=`<b>${hhmm(dt)}</b> <span class="muted">${dt.getDate()} ${MON[dt.getMonth()]}</span><br>Room <b>${d.room}°</b>`+
+    (d.power?`<br>Target <b>${d.sp}°</b><br><span class="muted">${MODE_NAME[d.mode]||'?'} · ${FAN_NAME[d.fan]||'?'} fan</span>`:'<br><span class="muted">Off</span>');
+  tip.style.display='block';const px=geo.X(d.t),w=tip.offsetWidth;
+  tip.style.left=(px+14+w>r.width?px-14-w:px+14)+'px';
+}
+function onLeave(){if(hover!=null){hover=null;draw()}tip.style.display='none'}
+cv.addEventListener('pointermove',onMove);cv.addEventListener('pointerdown',onMove);cv.addEventListener('pointerleave',onLeave);
+addEventListener('resize',draw);dark.addEventListener('change',draw);
+load();setInterval(load,5*60*1000);
+</script>
+</body>
+</html>
