@@ -1,0 +1,314 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Aircon History</title>
+<style>
+/* Contrast targets: primary text >= 15:1, secondary >= 7:1, tertiary >= 4.5:1 on the card,
+   in both themes. "Off" is shown by the switch, the words and a grey arc, never by fading. */
+:root{
+  --page-a:#eef1f5; --page-b:#dde3ea;
+  --card:rgba(255,255,255,.94); --card-edge:#fff; --card-shadow:0 30px 60px -30px rgba(30,50,80,.35),0 2px 6px rgba(30,50,80,.08);
+  --ink:#0f0f12; --ink2:#3a3a40; --ink3:#5c5c64;
+  --well:rgba(118,118,128,.14); --chip:#fff; --chip-shadow:0 3px 8px rgba(0,0,0,.12),0 0 0 .5px rgba(0,0,0,.06);
+  --track:rgba(118,118,128,.22); --btn:rgba(118,118,128,.14); --btn-hover:rgba(118,118,128,.22);
+  --switch-off:rgba(120,120,128,.32); --idle:#8e8e96; --link:#0a5cc2;
+  --danger:#c0261c; --warn-bg:#fff1d6; --warn-ink:#7a4a00;
+  --chart-room:#0a6cdc; --chart-target:#3a3a40; --chart-off:rgba(118,118,128,.13); --chart-grid:rgba(60,60,67,.12);
+}
+@media (prefers-color-scheme: dark){
+  :root:not([data-theme="light"]){
+    --page-a:#17191d; --page-b:#0c0d10;
+    --card:#232529; --card-edge:rgba(255,255,255,.08); --card-shadow:0 30px 60px -30px #000,0 2px 6px rgba(0,0,0,.4);
+    --ink:#f5f5f7; --ink2:#d1d1d6; --ink3:#a9a9b0;
+    --well:rgba(118,118,128,.26); --chip:#56565c; --chip-shadow:0 3px 8px rgba(0,0,0,.35);
+    --track:rgba(118,118,128,.38); --btn:rgba(118,118,128,.26); --btn-hover:rgba(118,118,128,.36);
+    --switch-off:rgba(120,120,128,.42); --idle:#7c7c84; --link:#6cb6ff;
+    --danger:#ff6b61; --warn-bg:rgba(255,176,32,.16); --warn-ink:#ffcf7a;
+    --chart-room:#5ab0ff; --chart-target:#d1d1d6; --chart-off:rgba(118,118,128,.2); --chart-grid:rgba(235,235,245,.1);
+  }
+}
+:root[data-theme="dark"]{
+  --page-a:#17191d; --page-b:#0c0d10;
+  --card:#232529; --card-edge:rgba(255,255,255,.08); --card-shadow:0 30px 60px -30px #000,0 2px 6px rgba(0,0,0,.4);
+  --ink:#f5f5f7; --ink2:#d1d1d6; --ink3:#a9a9b0;
+  --well:rgba(118,118,128,.26); --chip:#56565c; --chip-shadow:0 3px 8px rgba(0,0,0,.35);
+  --track:rgba(118,118,128,.38); --btn:rgba(118,118,128,.26); --btn-hover:rgba(118,118,128,.36);
+  --switch-off:rgba(120,120,128,.42); --idle:#7c7c84; --link:#6cb6ff;
+  --danger:#ff6b61; --warn-bg:rgba(255,176,32,.16); --warn-ink:#ffcf7a;
+  --chart-room:#5ab0ff; --chart-target:#d1d1d6; --chart-off:rgba(118,118,128,.2); --chart-grid:rgba(235,235,245,.1);
+}
+*{box-sizing:border-box}
+html,body{margin:0;min-height:100%}
+body{background:linear-gradient(160deg,var(--page-a),var(--page-b)) fixed;color:var(--ink);
+  font:15px/1.45 -apple-system,BlinkMacSystemFont,"SF Pro Text","Helvetica Neue",system-ui,sans-serif;-webkit-font-smoothing:antialiased;
+  min-height:100svh;display:flex;justify-content:center;padding:32px 16px}
+button{font:inherit;color:inherit;-webkit-tap-highlight-color:transparent;cursor:pointer}
+svg{display:block}
+.stack{width:min(420px,100%);display:flex;flex-direction:column;align-self:center}
+.stack.wide{width:min(760px,100%);align-self:flex-start}
+
+.card{width:100%;border-radius:30px;padding:24px 22px 22px;background:var(--card);box-shadow:inset 0 0 0 1px var(--card-edge),var(--card-shadow)}
+.top{display:flex;justify-content:space-between;align-items:center}
+.name{font-weight:600;font-size:18px;letter-spacing:-.01em}
+.sub{font-size:14px;color:var(--ink2);margin-top:2px}
+
+.switch{width:51px;height:31px;border-radius:16px;border:0;padding:0;position:relative;background:var(--switch-off);transition:background .25s}
+.switch::after{content:"";position:absolute;top:2px;left:2px;width:27px;height:27px;border-radius:50%;background:#fff;
+  box-shadow:0 3px 8px rgba(0,0,0,.18),0 1px 1px rgba(0,0,0,.12);transition:left .25s cubic-bezier(.3,1.3,.5,1)}
+.switch[aria-checked="true"]{background:#34c759}
+.switch[aria-checked="true"]::after{left:22px}
+.switch:focus-visible{outline:3px solid var(--accent);outline-offset:3px}
+
+.arcwrap{position:relative;width:100%;max-width:340px;margin:14px auto 0;touch-action:none;user-select:none;cursor:pointer}
+.arcwrap:focus-visible{outline:3px solid var(--accent);outline-offset:6px;border-radius:12px}
+.arcwrap svg{width:100%;height:auto;overflow:visible}
+.center{position:absolute;left:0;right:0;bottom:6%;text-align:center;pointer-events:none}
+.center .cap{font-size:13px;font-weight:600;color:var(--ink2);height:18px}
+.center .t{font:300 68px/1 -apple-system,"SF Pro Display",system-ui,sans-serif;letter-spacing:-.03em;font-variant-numeric:tabular-nums;margin-top:2px}
+.center .t sup{font-size:26px;vertical-align:32px;font-weight:400}
+.center .s{font-size:14px;color:var(--ink2);margin-top:2px}
+.is-off .center .t{color:var(--ink3)}
+
+.stepper{display:flex;justify-content:center;gap:28px;margin-top:10px}
+.stepper button{width:46px;height:46px;border-radius:50%;border:0;background:var(--btn);display:flex;align-items:center;justify-content:center;color:var(--ink)}
+.stepper button:hover{background:var(--btn-hover)}
+.stepper button:active{transform:scale(.95)}
+.stepper svg{width:18px;height:18px}
+
+.seg{position:relative;display:grid;grid-template-columns:repeat(5,1fr);background:var(--well);border-radius:14px;padding:3px;margin-top:20px}
+.seg .pill{position:absolute;top:3px;bottom:3px;left:3px;width:calc((100% - 6px)/5);border-radius:11px;background:var(--chip);box-shadow:var(--chip-shadow);transition:transform .35s cubic-bezier(.3,1.2,.4,1)}
+.seg button{position:relative;border:0;background:none;padding:9px 0 7px;display:flex;flex-direction:column;align-items:center;gap:3px;font-size:12px;font-weight:500;color:var(--ink2)}
+.seg button svg{width:21px;height:21px}
+.seg button.on{color:var(--ink);font-weight:600}
+.seg button.on svg{color:var(--accent)}
+
+.fan{display:flex;align-items:center;justify-content:space-between;margin-top:16px}
+.fan .l{font-size:14px;font-weight:500;color:var(--ink2)}
+.opts{display:flex;gap:2px;background:var(--well);border-radius:12px;padding:3px}
+.opts button{border:0;background:none;border-radius:9px;padding:6px 13px;font-size:13px;font-weight:500;color:var(--ink2)}
+.opts button.on{background:var(--chip);color:var(--ink);font-weight:600;box-shadow:var(--chip-shadow)}
+
+/* ---------- charts ---------- */
+.chartcard{margin-top:16px;padding:18px 18px 14px}
+.chead{display:flex;justify-content:space-between;align-items:flex-start;margin-bottom:10px;gap:12px}
+.ctitle{font-weight:600;font-size:15px}
+.legend{font-size:12px;color:var(--ink2);margin-top:3px;display:flex;align-items:center;gap:5px;flex-wrap:wrap}
+.legend .k{display:inline-block;width:14px;height:3px;border-radius:2px;margin-left:6px}
+.legend .k:first-child{margin-left:0}
+.legend .room{background:var(--chart-room)}
+.legend .target{background:repeating-linear-gradient(90deg,var(--chart-target) 0 4px,transparent 4px 7px)}
+.legend .runk{height:10px;width:12px;background:color-mix(in srgb,var(--chart-room) 22%,transparent);border-radius:3px}
+.more{color:var(--link);text-decoration:none;font-size:14px;font-weight:500;white-space:nowrap}
+.chart{width:100%;display:block}
+.empty{display:none;text-align:center;color:var(--ink2);padding:40px 0;font-size:14px}
+
+.back{color:var(--link);text-decoration:none;font-size:15px;font-weight:500;display:inline-block;margin:0 4px 14px}
+h1{font:600 26px/1.2 -apple-system,"SF Pro Display",system-ui,sans-serif;letter-spacing:-.02em;margin:0 4px 4px}
+.device{color:var(--ink2);font-size:13px;margin:0 4px 18px;min-height:19px}
+.ranges{margin-bottom:16px;display:inline-flex;align-self:flex-start}
+.ranges button{padding:7px 14px}
+.stats{display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:16px}
+.stat{background:var(--card);border-radius:18px;padding:14px 16px;box-shadow:inset 0 0 0 1px var(--card-edge),0 1px 3px rgba(0,0,0,.06)}
+.stat .k{font-size:12px;font-weight:500;color:var(--ink2)}
+.stat .v{font:500 22px/1.2 -apple-system,"SF Pro Display",system-ui,sans-serif;margin-top:4px;font-variant-numeric:tabular-nums}
+.stat .v small{font-size:13px;color:var(--ink2);font-weight:400}
+@media (max-width:560px){.stats{grid-template-columns:repeat(2,1fr)}}
+.plot{position:relative}
+.tip{position:absolute;top:8px;pointer-events:none;background:var(--card);color:var(--ink);border-radius:12px;padding:9px 11px;font-size:13px;line-height:1.5;
+  box-shadow:0 8px 24px -8px rgba(0,0,0,.35),inset 0 0 0 1px var(--card-edge);white-space:nowrap;display:none}
+.tip b{font-weight:600}
+.tip .muted{color:var(--ink2)}
+.modekey{display:flex;gap:12px;flex-wrap:wrap;font-size:12px;color:var(--ink2);margin-top:8px}
+.modekey i{display:inline-block;width:10px;height:10px;border-radius:3px;margin-right:5px;vertical-align:-1px}
+</style>
+</head>
+<body>
+<div class="stack wide">
+  <a class="back" href="/">‹ Controls</a>
+  <h1>History</h1>
+  <div class="device" id="device"></div>
+  <div class="opts ranges" id="ranges">
+    <button data-h="1">1h</button><button data-h="6">6h</button><button data-h="24" class="on">24h</button><button data-h="72">3 days</button><button data-h="168">7 days</button>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="k">Average room</div><div class="v" id="avg">–</div></div>
+    <div class="stat"><div class="k">Room range</div><div class="v" id="range">–</div></div>
+    <div class="stat"><div class="k">Running</div><div class="v" id="ontime">–</div></div>
+    <div class="stat"><div class="k">Mostly</div><div class="v" id="topmode">–</div></div>
+  </div>
+  <section class="card chartcard" style="margin-top:0">
+    <div class="chead"><div class="legend"><span class="k room"></span>Room <span class="k target"></span>Target <span class="k runk"></span>Running</div></div>
+    <div class="plot"><canvas id="chart" class="chart" style="height:340px"></canvas><div class="tip" id="tip"></div></div>
+    <div class="empty" id="empty">Collecting data, check back in a minute.</div>
+    <div class="modekey" id="modekey"></div>
+  </section>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+const dark=matchMedia('(prefers-color-scheme: dark)');
+const isDark=()=>{const t=document.documentElement.dataset.theme;return t?t==='dark':dark.matches};
+const cssVar=n=>getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+
+// The server API. A preview build swaps in window.AIRCON_API with canned data.
+const API=window.AIRCON_API||{
+  async status(){const r=await fetch('/api/status');return r.json()},
+  async history(hours){const r=await fetch('/api/history?hours='+hours);return r.json()},
+  async post(path,body){
+    const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(!r.ok)throw new Error((await r.text())||r.statusText);
+    return r.json();
+  }
+};
+
+const MODE_NAME={0:'Fan',1:'Dry',2:'Auto',3:'Cool',4:'Heat',5:'Vent'};
+const FAN_NAME={0:'Auto',1:'Low',2:'Low-Med',3:'Medium',4:'Med-High',5:'High'};
+const MODE_COLOR={3:['#0a6cdc','#5ab0ff'],4:['#d4520c','#ff9d5c'],2:['#7038d6','#b994ff'],0:['#4a5568','#c3ccd8'],1:['#08806f','#4fd8c2'],5:['#4a5568','#c3ccd8']};
+
+// The controller reports whole degrees, so the raw room series flickers between
+// neighbours. Charts draw a 15-minute centred average (rs); tooltips show the raw value.
+function parseHistory(j){
+  const d=j.t.map((ts,i)=>({t:ts*1000,room:j.room[i],sp:j.sp[i],power:j.power[i],mode:j.mode[i],fan:j.fan[i]})).filter(x=>x.room!=null);
+  const half=7.5*60*1000;let a=0,b=0,sum=0;
+  for(let i=0;i<d.length;i++){
+    while(b<d.length&&d[b].t<=d[i].t+half){sum+=d[b].room;b++}
+    while(d[a].t<d[i].t-half){sum-=d[a].room;a++}
+    d[i].rs=sum/(b-a);
+  }
+  return d;
+}
+// Consecutive samples that share a state, as [tStart, tEnd, sample] runs, split at data gaps.
+function runs(data,t0,key){
+  const out=[];let cur=null;
+  for(let i=1;i<data.length;i++){const a=data[i-1],b=data[i];if(b.t<t0)continue;
+    if(b.t-a.t>=GAP){cur=null;continue}
+    const k=key(a);if(k==null){cur=null;continue}
+    if(cur&&cur.k===k&&cur.end===a.t)cur.end=b.t;else{cur={k,start:Math.max(a.t,t0),end:b.t,s:a};out.push(cur)}}
+  return out;
+}
+
+const GAP=10*60*1000;   // a hole longer than this (server down) breaks the lines
+const MON=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+const hhmm=d=>`${String(d.getHours()).padStart(2,'0')}:${String(d.getMinutes()).padStart(2,'0')}`;
+
+// Room temperature (solid) and target (dashed, only while running) over time,
+// with off periods shaded. `compact` is the homepage version: fewer labels,
+// no mode strip. Returns the geometry so a caller can map pointer x to a sample.
+function drawChart(cv,data,opt={}){
+  if(opt.empty)opt.empty.style.display=data.length<2?'block':'none';
+  cv.style.display=data.length<2?'none':'block';
+  if(data.length<2)return null;
+  const dpr=devicePixelRatio||1,W=cv.clientWidth,H=cv.clientHeight;
+  cv.width=W*dpr;cv.height=H*dpr;
+  const g=cv.getContext('2d');g.setTransform(dpr,0,0,dpr,0,0);g.clearRect(0,0,W,H);
+  const C={room:cssVar('--chart-room'),target:cssVar('--chart-target'),off:cssVar('--chart-off'),grid:cssVar('--chart-grid'),label:cssVar('--ink3')};
+  const strip=opt.compact?0:8;
+  const pad=opt.compact?{l:30,r:4,t:6,b:20}:{l:36,r:8,t:10,b:36+strip+6};
+  const x0=pad.l,x1=W-pad.r,y0=pad.t,y1=H-pad.b;
+  const t1=opt.end||data[data.length-1].t,t0=opt.span?t1-opt.span:data[0].t;
+  let lo=Infinity,hi=-Infinity;
+  for(const d of data){if(d.t<t0)continue;lo=Math.min(lo,d.room);hi=Math.max(hi,d.room);if(d.power&&d.sp!=null){lo=Math.min(lo,d.sp);hi=Math.max(hi,d.sp)}}
+  lo=Math.floor(lo-1);hi=Math.ceil(hi+1);if(hi-lo<4){const m=(hi+lo)/2;lo=Math.floor(m-2);hi=Math.ceil(m+2)}
+  const X=t=>x0+(t-t0)/(t1-t0)*(x1-x0),Y=v=>y1-(v-lo)/(hi-lo)*(y1-y0);
+
+  // running periods, tinted by mode
+  const di=isDark()?1:0,running=runs(data,t0,d=>d.power?d.mode:null);
+  for(const r of running){g.fillStyle=(MODE_COLOR[r.k]||MODE_COLOR[0])[di]+(di?'2e':'1f');const xa=X(r.start);g.fillRect(xa,y0,X(r.end)-xa,y1-y0)}
+
+  // grid + y labels
+  g.font='500 11px -apple-system,system-ui,sans-serif';g.lineWidth=1;g.textBaseline='middle';
+  const yStep=(hi-lo)<=6?1:(hi-lo)<=12?2:5;
+  for(let v=Math.ceil(lo/yStep)*yStep;v<=hi;v+=yStep){const y=Math.round(Y(v))+.5;
+    g.strokeStyle=C.grid;g.beginPath();g.moveTo(x0,y);g.lineTo(x1,y);g.stroke();
+    g.fillStyle=C.label;g.textAlign='right';g.fillText(v+'°',x0-6,y)}
+
+  // x ticks on clock-aligned local times
+  const spanMin=(t1-t0)/60000;
+  const stepMin=opt.compact?(spanMin<=360?60:360):spanMin<=90?15:spanMin<=180?30:spanMin<=540?60:spanMin<=1080?180:spanMin<=2160?360:spanMin<=4800?720:1440;
+  const start=new Date(t0);start.setHours(0,0,0,0);g.textAlign='center';g.textBaseline='alphabetic';let prevDay=null;
+  for(let k=0;;k++){const td=new Date(start);td.setMinutes(k*stepMin);const tk=td.getTime();if(tk>t1)break;if(tk<t0)continue;
+    const x=Math.round(X(tk))+.5;g.strokeStyle=C.grid;g.beginPath();g.moveTo(x,y0);g.lineTo(x,y1);g.stroke();
+    const tx=Math.min(Math.max(x,x0+16),x1-16);g.fillStyle=C.label;
+    g.fillText(stepMin>=1440?`${td.getDate()} ${MON[td.getMonth()]}`:hhmm(td),tx,y1+14);
+    if(!opt.compact&&stepMin<1440&&td.getDate()!==prevDay)g.fillText(`${td.getDate()} ${MON[td.getMonth()]}`,tx,y1+27);
+    prevDay=td.getDate()}
+
+  // mode strip: what the unit was doing, coloured by mode, empty while off
+  if(strip){const sy=H-strip-2;
+    g.fillStyle=C.off;g.beginPath();g.roundRect(x0,sy,x1-x0,strip,3);g.fill();
+    for(const r of running){g.fillStyle=(MODE_COLOR[r.k]||MODE_COLOR[0])[di];const xa=X(r.start);g.fillRect(xa,sy,Math.max(X(r.end)-xa,1.5),strip)}}
+
+  // target, stepped, only while running
+  g.save();g.strokeStyle=C.target;g.lineWidth=1.6;g.setLineDash([4,3]);g.beginPath();let on=false;
+  for(let i=0;i<data.length;i++){const d=data[i],p=data[i-1];if(d.t<t0)continue;
+    const run=d.power&&d.sp!=null&&!(p&&d.t-p.t>=GAP);
+    if(run){const x=X(d.t),y=Y(d.sp);if(!on||!p||!p.power||p.sp==null){g.moveTo(x,y)}else{g.lineTo(x,Y(p.sp));g.lineTo(x,y)}on=true}else on=false}
+  g.stroke();g.restore();
+
+  // room temperature, with a soft fill underneath; each unbroken stretch is its own shape
+  const segs=[];let seg=null;
+  for(let i=0;i<data.length;i++){const d=data[i],p=data[i-1];if(d.t<t0)continue;
+    if(!seg||(p&&d.t-p.t>=GAP)){seg=[];segs.push(seg)}seg.push([X(d.t),Y(d.rs)])}
+  const grad=g.createLinearGradient(0,y0,0,y1);grad.addColorStop(0,C.room+'38');grad.addColorStop(1,C.room+'00');
+  g.strokeStyle=C.room;g.lineWidth=2.2;g.lineJoin='round';
+  for(const sg of segs){if(sg.length<2)continue;
+    const line=new Path2D();sg.forEach(([x,y],i)=>i?line.lineTo(x,y):line.moveTo(x,y));
+    const area=new Path2D(line);area.lineTo(sg[sg.length-1][0],y1);area.lineTo(sg[0][0],y1);area.closePath();
+    g.fillStyle=grad;g.fill(area);g.stroke(line)}
+
+  // hover crosshair
+  if(opt.hover!=null){const d=data[opt.hover],x=X(d.t);
+    g.strokeStyle=C.label;g.lineWidth=1;g.beginPath();g.moveTo(x+.5,y0);g.lineTo(x+.5,y1);g.stroke();
+    const dot=(v,c)=>{g.fillStyle=c;g.beginPath();g.arc(x,Y(v),4,0,7);g.fill();g.strokeStyle=cssVar('--card')||'#fff';g.lineWidth=2;g.stroke()};
+    if(d.power&&d.sp!=null)dot(d.sp,C.target);dot(d.rs,C.room)}
+  return {X,t0,t1,x0,x1};
+}
+
+let hours=24,DATA=[],geo=null,hover=null;
+$('modekey').innerHTML='Bar under the chart shows the mode while running: '+[[3,'Cool'],[4,'Heat'],[2,'Auto'],[0,'Fan'],[1,'Dry']].map(([id,n])=>`<span><i style="background:${MODE_COLOR[id][isDark()?1:0]}"></i>${n}</span>`).join('');
+
+function stats(){
+  const t0=Date.now()-hours*3600e3, d=DATA.filter(x=>x.t>=t0);
+  if(d.length<2){for(const id of ['avg','range','ontime','topmode'])$(id).textContent='–';return}
+  let sum=0,lo=Infinity,hi=-Infinity,onMs=0,span=0;const byMode={};
+  for(let i=0;i<d.length;i++){const x=d[i];sum+=x.room;lo=Math.min(lo,x.room);hi=Math.max(hi,x.room);
+    if(i){const dt=x.t-d[i-1].t;if(dt<GAP){span+=dt;if(d[i-1].power){onMs+=dt;byMode[d[i-1].mode]=(byMode[d[i-1].mode]||0)+dt}}}}
+  $('avg').innerHTML=`${(sum/d.length).toFixed(1)}°`;
+  $('range').innerHTML=`${lo}° <small>to</small> ${hi}°`;
+  const h=onMs/3600e3;$('ontime').innerHTML=h<1?`${Math.round(h*60)} <small>min</small>`:`${h.toFixed(h<10?1:0)} <small>h · ${Math.round(onMs/span*100)}%</small>`;
+  const top=Object.entries(byMode).sort((a,b)=>b[1]-a[1])[0];
+  $('topmode').textContent=top?MODE_NAME[top[0]]:'Off';
+}
+function draw(){geo=drawChart($('chart'),DATA,{empty:$('empty'),span:hours*3600e3,end:Date.now(),hover})}
+async function load(){
+  try{const j=await API.history(hours);const i=j.info||{};
+    $('device').textContent=i.model?`Daikin ${i.model} · controller ${i.controller_version||'?'} · comms ${i.comm_version||'?'}`:'';
+    DATA=parseHistory(j)}catch(e){DATA=[]}
+  hover=null;$('tip').style.display='none';stats();draw();
+}
+$('ranges').onclick=e=>{const b=e.target.closest('button');if(!b)return;hours=+b.dataset.h;
+  document.querySelectorAll('#ranges button').forEach(x=>x.classList.toggle('on',x===b));load()};
+
+const cv=$('chart'),tip=$('tip');
+function onMove(e){
+  if(!geo||!DATA.length)return;const r=cv.getBoundingClientRect(),x=e.clientX-r.left;
+  if(x<geo.x0||x>geo.x1){onLeave();return}
+  const t=geo.t0+(x-geo.x0)/(geo.x1-geo.x0)*(geo.t1-geo.t0);
+  let lo=0,hi=DATA.length-1;while(hi-lo>1){const m=(lo+hi)>>1;if(DATA[m].t<t)lo=m;else hi=m}
+  const i=Math.abs(DATA[lo].t-t)<Math.abs(DATA[hi].t-t)?lo:hi,d=DATA[i];
+  if(Math.abs(d.t-t)>GAP){onLeave();return}
+  if(i!==hover){hover=i;draw()}
+  const dt=new Date(d.t);
+  tip.innerHTML=`<b>${hhmm(dt)}</b> <span class="muted">${dt.getDate()} ${MON[dt.getMonth()]}</span><br>Room <b>${d.room}°</b>`+
+    (d.power?`<br>Target <b>${d.sp}°</b><br><span class="muted">${MODE_NAME[d.mode]||'?'} · ${FAN_NAME[d.fan]||'?'} fan</span>`:'<br><span class="muted">Off</span>');
+  tip.style.display='block';const px=geo.X(d.t),w=tip.offsetWidth;
+  tip.style.left=(px+14+w>r.width?px-14-w:px+14)+'px';
+}
+function onLeave(){if(hover!=null){hover=null;draw()}tip.style.display='none'}
+cv.addEventListener('pointermove',onMove);cv.addEventListener('pointerdown',onMove);cv.addEventListener('pointerleave',onLeave);
+addEventListener('resize',draw);dark.addEventListener('change',draw);
+load();setInterval(load,5*60*1000);
+</script>
+</body>
+</html>

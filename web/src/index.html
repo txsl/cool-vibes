@@ -1,0 +1,170 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Office Aircon</title>
+<style>
+/*__SHARED_CSS__*/
+.statusline{min-height:20px;text-align:center;font-size:13px;color:var(--ink2);margin:10px 0 0}
+.statusline.err{color:var(--danger)}
+.filter{display:none;margin-top:14px;padding:9px 12px;border-radius:12px;background:var(--warn-bg);color:var(--warn-ink);font-size:13px;font-weight:500;text-align:center}
+.filter.show{display:block}
+.offline .ctl{opacity:.55;pointer-events:none}
+</style>
+</head>
+<body>
+<div class="stack">
+<main class="card" id="card">
+  <div class="top">
+    <div><div class="name">Office Aircon</div><div class="sub" id="sub">Connecting…</div></div>
+    <button class="switch ctl" id="pow" role="switch" aria-checked="false" aria-label="Power"></button>
+  </div>
+  <div class="arcwrap ctl" id="arc" role="slider" tabindex="0" aria-label="Target temperature">
+    <svg viewBox="0 0 320 190" id="arcSvg"></svg>
+    <div class="center"><div class="cap" id="cap"></div><div class="t" id="t">--</div><div class="s" id="s"></div></div>
+  </div>
+  <div class="stepper ctl">
+    <button id="dn" aria-label="Cooler"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14"/></svg></button>
+    <button id="up" aria-label="Warmer"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M5 12h14M12 5v14"/></svg></button>
+  </div>
+  <div class="seg ctl" id="modes"><div class="pill" id="pill"></div></div>
+  <div class="fan ctl"><span class="l">Fan</span><div class="opts" id="fans"></div></div>
+  <div class="filter" id="filter">Filter needs cleaning</div>
+</main>
+<div class="statusline" id="statusline"></div>
+
+<section class="card chartcard">
+  <div class="chead">
+    <div><div class="ctitle">Last 24 hours</div><div class="legend"><span class="k room"></span>Room <span class="k target"></span>Target <span class="k runk"></span>Running</div></div>
+    <a class="more" href="/history">History ›</a>
+  </div>
+  <canvas id="mini" class="chart" style="height:150px"></canvas>
+  <div class="empty" id="miniEmpty">Collecting data, check back in a minute.</div>
+</section>
+</div>
+
+<script>
+/*__SHARED_JS__*/
+const MODES=[
+  {id:3,k:'cool',n:'Cool',a:['#0a6cdc','#5ab0ff'],cap:'Cooling to'},
+  {id:4,k:'heat',n:'Heat',a:['#d4520c','#ff9d5c'],cap:'Heating to'},
+  {id:2,k:'auto',n:'Auto',a:['#7038d6','#b994ff'],cap:'Keeping at'},
+  {id:0,k:'fan',n:'Fan',a:['#4a5568','#c3ccd8'],cap:'Fan only'},
+  {id:1,k:'dry',n:'Dry',a:['#08806f','#4fd8c2'],cap:'Drying'}
+];
+const FANS=[{id:1,n:'Low'},{id:3,n:'Medium'},{id:5,n:'High'}];
+const ICON={
+  cool:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M12 2v20M3.3 7l17.4 10M3.3 17L20.7 7"/><path d="M9 4l3 2 3-2M9 20l3-2 3 2M4 10.5l3.4-.5L6 7M18 17l-1.4-3 3.4-.5M4 13.5l3.4.5L6 17M18 7l-1.4 3 3.4.5"/></svg>',
+  heat:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v2.5M12 19.5V22M2 12h2.5M19.5 12H22M4.9 4.9l1.8 1.8M17.3 17.3l1.8 1.8M4.9 19.1l1.8-1.8M17.3 6.7l1.8-1.8"/></svg>',
+  auto:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 12a8 8 0 0 1-13.7 5.7M4 12a8 8 0 0 1 13.7-5.7"/><path d="M18 3v3.5h-3.5M6 21v-3.5h3.5"/><path d="M9.5 14.5l2.5-6 2.5 6M10.4 12.6h3.2"/></svg>',
+  fan:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="1.6"/><path d="M12 10.4C11 7 11.5 3.5 14 3.5c2.4 0 2.6 3.6-2 6.9M13.6 12c3.4-1 6.9-.5 6.9 2 0 2.4-3.6 2.6-6.9-2M12 13.6c1 3.4.5 6.9-2 6.9-2.4 0-2.6-3.6 2-6.9M10.4 12C7 13 3.5 12.5 3.5 10c0-2.4 3.6-2.6 6.9 2"/></svg>',
+  dry:'<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M12 3s6 6.6 6 11a6 6 0 0 1-12 0c0-4.4 6-11 6-11z"/><path d="M9.5 15a2.5 2.5 0 0 0 2.5 2.5" stroke-linecap="round"/></svg>'
+};
+const modeOf=id=>MODES.find(m=>m.id===id)||MODES[0];
+const usesSet=m=>['cool','heat','auto'].includes(m.k);
+// Display state. Server state replaces it on every poll and command response;
+// `pending` holds a setpoint the user is still dragging so a poll can't snap it back.
+let st=null, busy=false, pending=null, sendTimer=null;
+let MIN=16,MAX=32;
+
+const svg=$('arcSvg'),CX=160,CY=170,R=140;
+const pt=v=>{const t=Math.PI*(1-(v-MIN)/(MAX-MIN));return[CX+R*Math.cos(t),CY-R*Math.sin(t)]};
+const arcPath=(a,b)=>{const[x1,y1]=pt(a),[x2,y2]=pt(b);return`M${x1} ${y1} A${R} ${R} 0 0 1 ${x2} ${y2}`};
+function drawArcFrame(){
+  svg.innerHTML=`<defs><filter id="sh" x="-50%" y="-50%" width="200%" height="200%"><feDropShadow dx="0" dy="2" stdDeviation="2.5" flood-opacity=".3"/></filter></defs>
+  <path d="${arcPath(MIN,MAX)}" fill="none" style="stroke:var(--track)" stroke-width="22" stroke-linecap="round"/>
+  <path id="act" fill="none" stroke-width="22" stroke-linecap="round"/>
+  <circle id="roomDot" r="3.5" style="fill:var(--ink)"/>
+  <circle id="hdl" r="15" fill="#fff" filter="url(#sh)"/><circle id="hdlCore" r="5"/>
+  <text x="${pt(MIN)[0]}" y="${CY+28}" text-anchor="middle" font-size="12" font-weight="500" style="fill:var(--ink3)">${MIN}°</text>
+  <text x="${pt(MAX)[0]}" y="${CY+28}" text-anchor="middle" font-size="12" font-weight="500" style="fill:var(--ink3)">${MAX}°</text>`;
+}
+drawArcFrame();
+$('modes').insertAdjacentHTML('beforeend',MODES.map(m=>`<button data-id="${m.id}">${ICON[m.k]}<span>${m.n}</span></button>`).join(''));
+$('fans').innerHTML=FANS.map(f=>`<button data-id="${f.id}">${f.n}</button>`).join('');
+
+function render(){
+  const card=$('card');
+  if(!st||!st.connected){card.classList.add('offline');$('sub').textContent='Controller offline, reconnecting…';return}
+  card.classList.remove('offline');
+  if(st.min_setpoint!=null&&st.max_setpoint!=null&&(st.min_setpoint!==MIN||st.max_setpoint!==MAX)){MIN=st.min_setpoint;MAX=st.max_setpoint;drawArcFrame()}
+  const m=modeOf(st.mode_id),on=!!st.power_on,acc=m.a[isDark()?1:0];
+  const sp=pending??st.setpoint, room=st.room_temp;
+  card.style.setProperty('--accent',acc);card.classList.toggle('is-off',!on);
+  const show=usesSet(m)&&sp!=null;
+  const hasRoom=room!=null, lo=hasRoom?Math.min(room,sp):sp, hi=hasRoom?Math.max(room,sp):sp;
+  // The coloured span runs from the room temperature to the target: the work the unit is doing.
+  $('act').setAttribute('d',on&&show&&hi>lo?arcPath(Math.max(MIN,lo),Math.min(MAX,hi)):'');$('act').setAttribute('stroke',acc);
+  if(hasRoom){const[rx,ry]=pt(Math.max(MIN,Math.min(MAX,room)));$('roomDot').setAttribute('cx',rx);$('roomDot').setAttribute('cy',ry)}
+  $('roomDot').style.opacity=hasRoom?1:0;
+  if(show){const[hx,hy]=pt(sp);for(const id of ['hdl','hdlCore']){$(id).setAttribute('cx',hx);$(id).setAttribute('cy',hy)}}
+  for(const id of ['hdl','hdlCore'])$(id).style.opacity=show?1:0;
+  $('hdlCore').setAttribute('fill',on?acc:'var(--idle)');
+  $('cap').textContent=on?m.cap:'Off';
+  $('t').innerHTML=show?`${Math.round(sp)}<sup>°</sup>`:'—';
+  $('s').textContent=hasRoom?`Room ${room}°`:'';
+  const fan=FANS.find(f=>f.id===st.fan_id);
+  $('sub').textContent=on?`${m.n} · ${fan?fan.n:st.fan||''} fan`:'Off';
+  $('pow').setAttribute('aria-checked',on);
+  $('arc').setAttribute('aria-valuenow',sp);$('arc').setAttribute('aria-valuemin',MIN);$('arc').setAttribute('aria-valuemax',MAX);
+  const idx=MODES.findIndex(x=>x.id===st.mode_id);
+  $('pill').style.opacity=idx<0?0:1;$('pill').style.transform=`translateX(${Math.max(idx,0)*100}%)`;
+  document.querySelectorAll('#modes button').forEach(b=>b.classList.toggle('on',+b.dataset.id===st.mode_id));
+  document.querySelectorAll('#fans button').forEach(b=>b.classList.toggle('on',+b.dataset.id===st.fan_id));
+  $('filter').classList.toggle('show',!!st.filter_dirty);
+}
+function status(msg,isErr){const e=$('statusline');e.textContent=msg||'';e.classList.toggle('err',!!isErr)}
+
+async function send(path,body,optimistic){
+  if(!st||!st.connected)return;
+  Object.assign(st,optimistic);render();
+  busy=true;status('Sending…');
+  try{st=await API.post(path,body);status('')}
+  catch(e){status(`Couldn't reach the aircon: ${e.message}`,true);poll(true)}
+  finally{busy=false;render()}
+}
+const setPower=on=>send('/api/power',{on},{power_on:on});
+const setMode=id=>send('/api/mode',{mode:id},{mode_id:id,power_on:st&&st.power_on});
+const setFan=id=>send('/api/fan',{speed:id},{fan_id:id});
+// Coalesce rapid +/- taps and drags into one setpoint write.
+function nudgeSet(v,immediate){
+  if(!st)return; v=Math.max(MIN,Math.min(MAX,Math.round(v)));
+  pending=v;render();clearTimeout(sendTimer);
+  sendTimer=setTimeout(async()=>{const t=pending;await send('/api/setpoint',{temp:t},{setpoint:t});if(pending===t)pending=null;render()},immediate?0:450);
+}
+
+$('pow').onclick=()=>st&&setPower(!st.power_on);
+$('modes').onclick=e=>{const b=e.target.closest('button');if(b)setMode(+b.dataset.id)};
+$('fans').onclick=e=>{const b=e.target.closest('button');if(b)setFan(+b.dataset.id)};
+$('up').onclick=()=>st&&nudgeSet((pending??st.setpoint)+1);
+$('dn').onclick=()=>st&&nudgeSet((pending??st.setpoint)-1);
+const arc=$('arc');
+const valAt=e=>{const r=svg.getBoundingClientRect(),sc=320/r.width,x=(e.clientX-r.left)*sc-CX,y=CY-(e.clientY-r.top)*sc;
+  return MIN+(1-Math.atan2(Math.max(y,0),x)/Math.PI)*(MAX-MIN)};
+let drag=false;
+arc.addEventListener('pointerdown',e=>{if(!st||!usesSet(modeOf(st.mode_id)))return;drag=true;arc.setPointerCapture(e.pointerId);pending=Math.round(valAt(e));render()});
+arc.addEventListener('pointermove',e=>{if(!drag)return;const v=Math.max(MIN,Math.min(MAX,Math.round(valAt(e))));if(v!==pending){pending=v;render()}});
+arc.addEventListener('pointerup',()=>{if(!drag)return;drag=false;if(pending!=null&&pending!==st.setpoint)nudgeSet(pending,true);else{pending=null;render()}});
+arc.addEventListener('keydown',e=>{const k={ArrowUp:1,ArrowRight:1,ArrowDown:-1,ArrowLeft:-1}[e.key];if(k&&st){e.preventDefault();nudgeSet((pending??st.setpoint)+k)}});
+
+async function poll(once){
+  if(!busy&&!drag){
+    try{st=await API.status()}catch(e){st={connected:false}}
+    render();
+  }
+  if(!once)setTimeout(poll,10000);
+}
+// The mini chart: room vs target over the last day, off periods shaded.
+let HIST=[];
+async function loadHist(){
+  try{HIST=parseHistory(await API.history(24))}catch(e){HIST=[]}
+  drawMini();
+}
+function drawMini(){drawChart($('mini'),HIST,{compact:true,empty:$('miniEmpty'),span:24*3600e3,end:Date.now()})}
+addEventListener('resize',drawMini);
+dark.addEventListener('change',()=>{render();drawMini()});
+poll();loadHist();setInterval(loadHist,5*60*1000);
+</script>
+</body>
+</html>
